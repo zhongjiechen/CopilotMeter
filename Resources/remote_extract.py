@@ -87,8 +87,14 @@ def process_file(path: str, sid: str, start_offset: int) -> int:
             })
         elif kind == "session.start":
             sm = d.get("selectedModel")
-            if sm:
-                emit({"sid": sid, "ts": ts, "t": "init", "sm": sm})
+            host_type = (d.get("context") or {}).get("hostType")
+            if sm or host_type:
+                obj_out = {"sid": sid, "ts": ts, "t": "init"}
+                if sm:
+                    obj_out["sm"] = sm
+                if host_type:
+                    obj_out["ht"] = host_type
+                emit(obj_out)
         elif kind == "session.shutdown":
             mm = d.get("modelMetrics") or {}
             for model, m in mm.items():
