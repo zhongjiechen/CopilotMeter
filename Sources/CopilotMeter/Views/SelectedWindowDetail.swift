@@ -38,6 +38,7 @@ struct SelectedWindowDetail: View {
             }
 
             CacheHitBar(stats: stats)
+            CostEstimateRow(stats: stats)
 
             if blindChat > 0 {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {

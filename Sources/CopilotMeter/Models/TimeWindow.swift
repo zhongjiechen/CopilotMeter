@@ -51,6 +51,10 @@ public struct UsageStats: Equatable, Sendable {
     public var premiumCost: Double = 0
     /// Interactions where we don't have token data (e.g., VS Code Chat)
     public var blindInteractions: Int = 0
+    /// Best-effort retail-equivalent USD cost, computed per-record using
+    /// PricingCatalog and the record's model. Tokens with unknown model
+    /// contribute 0.
+    public var estimatedRetailUsd: Double = 0
 
     public static let zero = UsageStats()
 
@@ -66,6 +70,12 @@ public struct UsageStats: Equatable, Sendable {
         max(0, inputTokens - cacheReadTokens)
     }
 
+    /// What GitHub itself would bill for these premium request units at the
+    /// standard $0.04/request overage rate.
+    public var githubOverageUsd: Double {
+        PricingCatalog.githubOverageUsd(premiumCost: premiumCost)
+    }
+
     public mutating func add(_ r: UsageRecord) {
         requests += r.requestCount
         outputTokens += r.outputTokens
@@ -73,5 +83,6 @@ public struct UsageStats: Equatable, Sendable {
         cacheReadTokens += r.cacheReadTokens
         cacheWriteTokens += r.cacheWriteTokens
         if let c = r.premiumCost { premiumCost += c }
+        estimatedRetailUsd += PricingCatalog.estimatedCost(for: r)
     }
 }

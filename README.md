@@ -12,6 +12,7 @@ A tiny native macOS menu bar app that tracks **how much you're actually using Gi
 | Window | Metric |
 |---|---|
 | **Today** / **Week (7d)** / **Month (30d)** | Premium request count, output tokens, input tokens, cache reads, premium-cost-equivalent |
+| **Estimated cost (USD)** | GitHub-overage equivalent (`premium_cost × $0.04`) and retail token-equivalent (at public Anthropic / OpenAI 2025 rates) |
 | **Cache hit rate** | % of input tokens served from prompt cache, with hit / miss / written breakdown |
 | Per model | Top models by request count, with mini progress bars and per-model cache hit % |
 | Per source | Copilot CLI vs VS Code Agent vs VS Code Chat — colour-coded with a permanent legend at the top of the popover |
@@ -37,6 +38,25 @@ Cache hit rate                                              90.4 %
 Per-model rows in the *Top Models* list also include each model's cache hit
 percentage, so you can see at a glance which models benefit most from
 prompt caching in your usage patterns.
+
+### Estimated cost in USD
+
+For each window CopilotMeter shows two dollar figures side-by-side:
+
+- **GitHub bill** — what GitHub would bill if you paid the standard
+  per-premium-request overage rate (`premium_cost × $0.04`). For enterprise
+  plans where every model's `cost` is recorded as 0 this stays at $0.
+- **Retail tokens** — best-effort estimate of what the underlying provider
+  (Anthropic / OpenAI) would charge for the same tokens at their public
+  2025 list prices. This is the "what am I getting" number for unlimited
+  enterprise seats.
+
+Retail rate constants live in
+[`Sources/CopilotMeter/Pricing/PricingCatalog.swift`](Sources/CopilotMeter/Pricing/PricingCatalog.swift)
+— update them when official prices change. Cache reads are billed at a 10 %
+discount of the input rate (Anthropic convention) and cache writes at a
+25 % surcharge; you can override either per-model via the `ModelPrice`
+initialiser.
 
 ## Data sources
 
