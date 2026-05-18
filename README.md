@@ -74,19 +74,45 @@ CopilotMeter reads three local files. **Nothing leaves your machine.**
 
 ## Install
 
-### The easy way — download the DMG
+### Option 1 — one-line installer (recommended)
 
-Grab the latest **CopilotMeter.dmg** from the
-[Releases page](https://github.com/zhongjiechen/CopilotMeter/releases/latest),
-open it, drag the app onto `Applications`, and launch it. Then add
-**CopilotMeter** to **System Settings → General → Login Items** to have it
-start at login.
+```bash
+curl -fsSL https://raw.githubusercontent.com/zhongjiechen/CopilotMeter/main/Scripts/install.sh | bash
+```
 
-> The DMG is ad-hoc codesigned (not notarised). The first time you launch
-> the app macOS may complain — right-click the app and choose **Open** once
-> to whitelist it.
+The script downloads the latest `CopilotMeter.dmg`, strips the macOS
+quarantine attribute, copies the app into `/Applications`, and ejects the
+disk image. Then add **CopilotMeter** to **System Settings → General →
+Login Items** to launch at login.
 
-### From source
+### Option 2 — download the DMG manually
+
+> ⚠️ **Gatekeeper note**: the DMG is ad-hoc codesigned, not notarised.
+> Downloading it through Safari/Chrome attaches `com.apple.quarantine`, and
+> double-clicking gives the dreaded *"Apple cannot verify that
+> CopilotMeter.dmg is free of malware"* dialog. Run **one** of the
+> following first:
+
+```bash
+# Strip quarantine from the DMG, then double-click as normal
+xattr -d com.apple.quarantine ~/Downloads/CopilotMeter.dmg
+open ~/Downloads/CopilotMeter.dmg
+```
+
+After dragging `CopilotMeter.app` to `Applications`, if the first launch
+is still blocked:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/CopilotMeter.app
+open -a CopilotMeter
+```
+
+This isn't a security workaround — it tells macOS "I downloaded this on
+purpose, stop pretending it came from the internet". Code-signing
+properly requires a paid Apple Developer ID; the source is right here in
+this repo for anyone who wants to inspect it.
+
+### Option 3 — build from source
 
 Requires Xcode command line tools (Swift 5.9 +) on Apple Silicon.
 
