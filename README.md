@@ -2,6 +2,10 @@
 
 A tiny native macOS menu bar app that tracks **how much you're actually using GitHub Copilot** — across Copilot CLI _and_ VS Code Copilot Chat — even when your subscription is "unlimited" and the built-in usage indicator stays stuck at 0 %.
 
+<p align="center">
+  <img src="docs/overview.png" alt="CopilotMeter popover showing today / week / month tiles, cache hit rate and per-model breakdown" width="420">
+</p>
+
 - Swift 5.9 / SwiftUI / `MenuBarExtra` (macOS 13 +)
 - Apple Silicon native (`arm64`)
 - Zero network calls — all data is read from local files on your Mac
