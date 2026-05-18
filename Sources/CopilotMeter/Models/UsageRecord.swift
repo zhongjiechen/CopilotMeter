@@ -6,6 +6,7 @@ public struct UsageRecord: Hashable, Codable, Sendable {
         case copilotCLI      // Terminal CLI sessions
         case vscodeAgent     // VS Code Copilot agent / copilotcli mode (writes events.jsonl)
         case vscodeChat      // VS Code "Ask" chat mode (no token data, count-only)
+        case codingAgent     // GitHub Copilot Coding Agent (cloud-dispatched, hostType=github)
         case unknown
 
         public var displayName: String {
@@ -13,6 +14,7 @@ public struct UsageRecord: Hashable, Codable, Sendable {
             case .copilotCLI: return "Copilot CLI"
             case .vscodeAgent: return "VS Code Agent"
             case .vscodeChat: return "VS Code Chat"
+            case .codingAgent: return "Coding Agent"
             case .unknown: return "Unknown"
             }
         }

@@ -261,27 +261,48 @@ enum RefreshWorker {
             var success = false
 
             // Pull token-relevant events via the remote-side extractor.
+            let extractResult: RemoteSSHExtractor.ExtractResult?
             do {
-                let result = try RemoteSSHExtractor.extract(remote, scriptPath: extractorScript)
-                try ingestExtractedEvents(result.events, into: cache, remoteName: remote.name)
+                extractResult = try RemoteSSHExtractor.extract(remote, scriptPath: extractorScript)
                 success = true
             } catch {
                 let msg = "extract: \(PathScrubber.scrub("\(error)"))"
                 hostErrors.append(msg)
                 phaseErrors.append("\(remote.name) \(msg)")
+                extractResult = nil
             }
 
-            // Also pull the VS Code Copilot Chat DB if configured.
+            // Also pull the VS Code Copilot Chat DB if configured — we need it
+            // both for the chat-mode interaction counts AND as a classification
+            // signal for events.jsonl session IDs.
             let pulledChat = RemoteSSHExtractor.pullVscodeChatDb(remote)
+            var remoteVsCodeIds: Set<String> = []
             if pulledChat {
                 let dbPath = RemoteSSHExtractor.vscodeChatDbPath(for: remote).path
                 let remoteReader = VSCodeChatReader(path: dbPath)
+                remoteVsCodeIds = remoteReader.knownSessionIds()
                 do {
                     try ingestVSCodeChat(into: cache, reader: remoteReader, remoteName: remote.name)
                 } catch {
                     let msg = "chat: \(PathScrubber.scrub("\(error)"))"
                     hostErrors.append(msg)
                     phaseErrors.append("\(remote.name) \(msg)")
+                }
+            }
+
+            if let extractResult {
+                do {
+                    try ingestExtractedEvents(
+                        extractResult.events,
+                        into: cache,
+                        remoteName: remote.name,
+                        remoteVsCodeIds: remoteVsCodeIds
+                    )
+                } catch {
+                    let msg = "ingest: \(PathScrubber.scrub("\(error)"))"
+                    hostErrors.append(msg)
+                    phaseErrors.append("\(remote.name) \(msg)")
+                    success = false
                 }
             }
 
@@ -326,18 +347,36 @@ enum RefreshWorker {
 
     /// Hydrates `UsageRecord`s from the JSONL stream returned by
     /// `RemoteSSHExtractor.extract`, then inserts them.
+    ///
+    /// Classification of each event.jsonl session uses two signals from the
+    /// session.start payload:
+    ///
+    ///   1. `context.hostType == "github"` → GitHub Copilot Coding Agent (the
+    ///      cloud-dispatched agent fired off from a PR or VS Code's "Delegate"
+    ///      feature).  → `.codingAgent`
+    ///   2. session_id present in the remote's VS Code Copilot Chat DB
+    ///      `sessions` table → VS Code Copilot Chat in agent mode. → `.vscodeAgent`
+    ///   3. Otherwise → terminal `copilot` CLI. → `.copilotCLI`
     private static func ingestExtractedEvents(
         _ events: [RemoteSSHExtractor.ExtractedEvent],
         into cache: CacheStore,
-        remoteName: String
+        remoteName: String,
+        remoteVsCodeIds: Set<String>
     ) throws {
-        // We need the session.start selectedModel to fill in 'model' for old
-        // assistant.message rows that lack it. Build a sid -> model map.
+        // First pass: collect per-session metadata (selectedModel, hostType).
         var sessionModel: [String: String] = [:]
+        var sessionHostType: [String: String] = [:]
         for e in events {
-            if case .sessionStartedWithModel(let sid, _, let sm) = e {
-                sessionModel[sid] = sm
+            if case .sessionInfo(let sid, _, let sm, let ht) = e {
+                if let sm { sessionModel[sid] = sm }
+                if let ht { sessionHostType[sid] = ht }
             }
+        }
+
+        func classify(_ sid: String) -> UsageRecord.Source {
+            if sessionHostType[sid] == "github" { return .codingAgent }
+            if remoteVsCodeIds.contains(sid) { return .vscodeAgent }
+            return .copilotCLI
         }
 
         for e in events {
@@ -346,7 +385,7 @@ enum RefreshWorker {
                 let resolvedModel = model ?? sessionModel[sid] ?? "unknown"
                 let rec = UsageRecord(
                     timestamp: ts, sessionId: sid, messageId: messageId,
-                    source: .copilotCLI, model: resolvedModel,
+                    source: classify(sid), model: resolvedModel,
                     outputTokens: outputTokens,
                     inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
                     requestCount: 1, premiumCost: nil, remoteName: remoteName
@@ -357,14 +396,14 @@ enum RefreshWorker {
                 if input == 0 && cr == 0 && cw == 0 && cost == nil { continue }
                 let rec = UsageRecord(
                     timestamp: ts, sessionId: sid, messageId: nil,
-                    source: .copilotCLI, model: model,
+                    source: classify(sid), model: model,
                     outputTokens: 0,
                     inputTokens: input, cacheReadTokens: cr, cacheWriteTokens: cw,
                     requestCount: 0, premiumCost: cost, remoteName: remoteName
                 )
                 try cache.insertRecord(rec, kind: .shutdown)
 
-            case .sessionStartedWithModel, .sessionEnded, .fileOffset:
+            case .sessionInfo, .sessionEnded, .fileOffset:
                 break
             }
         }
@@ -397,7 +436,10 @@ enum RefreshWorker {
             }
 
             let sessionId = sessionDir.lastPathComponent
-            let source: UsageRecord.Source = vsCodeIds.contains(sessionId) ? .vscodeAgent : .copilotCLI
+            // Initial guess: if the session ID appears in the local VS Code
+            // Chat DB, it's an agent-mode VS Code session; otherwise CLI.
+            // hostType (parsed below) may override this.
+            let initialSource: UsageRecord.Source = vsCodeIds.contains(sessionId) ? .vscodeAgent : .copilotCLI
 
             var resumeFrom = state?.byteOffset ?? 0
             if let attrs = try? fm.attributesOfItem(atPath: eventsFile.path),
@@ -409,12 +451,36 @@ enum RefreshWorker {
             let parsed = try parser.parse(
                 file: eventsFile,
                 fromByteOffset: resumeFrom,
-                source: source,
+                source: initialSource,
                 remoteName: remoteName
             )
+
+            // hostType=github → this is a GitHub Copilot Coding Agent session
+            // (cloud-dispatched, e.g. via /delegate). Override the source.
+            let finalSource: UsageRecord.Source = (parsed.hostType == "github") ? .codingAgent : initialSource
+
             for r in parsed.records {
-                let kind: CacheStore.RecordKind = (r.requestCount > 0) ? .message : .shutdown
-                try cache.insertRecord(r, kind: kind)
+                let record: UsageRecord
+                if finalSource == r.source {
+                    record = r
+                } else {
+                    record = UsageRecord(
+                        timestamp: r.timestamp,
+                        sessionId: r.sessionId,
+                        messageId: r.messageId,
+                        source: finalSource,
+                        model: r.model,
+                        outputTokens: r.outputTokens,
+                        inputTokens: r.inputTokens,
+                        cacheReadTokens: r.cacheReadTokens,
+                        cacheWriteTokens: r.cacheWriteTokens,
+                        requestCount: r.requestCount,
+                        premiumCost: r.premiumCost,
+                        remoteName: r.remoteName
+                    )
+                }
+                let kind: CacheStore.RecordKind = (record.requestCount > 0) ? .message : .shutdown
+                try cache.insertRecord(record, kind: kind)
             }
             try cache.updateFileState(
                 filePath: eventsFile.path,
