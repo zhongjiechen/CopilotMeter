@@ -50,6 +50,22 @@ public final class CacheStore {
         """)
         try db.exec("CREATE INDEX IF NOT EXISTS idx_records_ts ON records(ts);")
         try db.exec("CREATE INDEX IF NOT EXISTS idx_records_source ON records(source);")
+
+        // Migration: add remote_name column to records and file_state.
+        // SQLite's ALTER TABLE ADD COLUMN is idempotent if we guard on table_info.
+        try migrate(table: "records", addColumn: "remote_name", typeDecl: "TEXT")
+        try migrate(table: "file_state", addColumn: "remote_name", typeDecl: "TEXT")
+        try db.exec("CREATE INDEX IF NOT EXISTS idx_records_remote ON records(remote_name);")
+    }
+
+    private func migrate(table: String, addColumn col: String, typeDecl: String) throws {
+        var hasColumn = false
+        try db.query("PRAGMA table_info(\(table))") { row in
+            if row.string(1) == col { hasColumn = true }
+        }
+        if !hasColumn {
+            try db.exec("ALTER TABLE \(table) ADD COLUMN \(col) \(typeDecl)")
+        }
     }
 
     public struct FileState {
@@ -108,11 +124,14 @@ public final class CacheStore {
 
     public func insertRecord(_ r: UsageRecord, kind: RecordKind) throws {
         // INSERT OR IGNORE so re-parsing the same lines is a no-op.
+        // UNIQUE constraint deliberately does NOT include remote_name — a
+        // record's identity is (session, message, kind, model) on whichever
+        // host produced it. Two remotes don't naturally share session IDs.
         try db.execute("""
             INSERT OR IGNORE INTO records
             (ts, session_id, message_id, source, model, output_tokens, input_tokens,
-             cache_read, cache_write, request_count, premium_cost, kind)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             cache_read, cache_write, request_count, premium_cost, kind, remote_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, bindings: [
             r.timestamp.timeIntervalSince1970,
             r.sessionId,
@@ -125,14 +144,27 @@ public final class CacheStore {
             r.cacheWriteTokens,
             r.requestCount,
             r.premiumCost,
-            kind.rawValue
+            kind.rawValue,
+            r.remoteName
         ])
     }
 
     /// Drop all chat rows so we can re-derive them from the source-of-truth VS Code
     /// DB on each refresh (cheaper than tracking incremental state for a small table).
-    public func clearChatRecords() throws {
-        try db.execute("DELETE FROM records WHERE kind = ?", bindings: [RecordKind.chat.rawValue])
+    /// `remoteName == nil` clears only local; pass a specific name to clear that
+    /// remote's chat rows; pass an empty array to clear nothing extra.
+    public func clearChatRecords(remoteName: String? = nil) throws {
+        if let name = remoteName {
+            try db.execute(
+                "DELETE FROM records WHERE kind = ? AND remote_name = ?",
+                bindings: [RecordKind.chat.rawValue, name]
+            )
+        } else {
+            try db.execute(
+                "DELETE FROM records WHERE kind = ? AND remote_name IS NULL",
+                bindings: [RecordKind.chat.rawValue]
+            )
+        }
     }
 
     public func allRecords(since: Date? = nil) throws -> [UsageRecord] {
@@ -143,7 +175,7 @@ public final class CacheStore {
             sql = """
                 SELECT ts, session_id, message_id, source, model,
                        output_tokens, input_tokens, cache_read, cache_write,
-                       request_count, premium_cost
+                       request_count, premium_cost, remote_name
                   FROM records WHERE ts >= ?
             """
             bindings = [since.timeIntervalSince1970]
@@ -151,7 +183,7 @@ public final class CacheStore {
             sql = """
                 SELECT ts, session_id, message_id, source, model,
                        output_tokens, input_tokens, cache_read, cache_write,
-                       request_count, premium_cost
+                       request_count, premium_cost, remote_name
                   FROM records
             """
             bindings = []
@@ -163,6 +195,7 @@ public final class CacheStore {
             let source = UsageRecord.Source(rawValue: row.string(3) ?? "") ?? .unknown
             let model = row.string(4) ?? "unknown"
             let cost: Double? = row.isNull(10) ? nil : row.double(10)
+            let remote: String? = row.isNull(11) ? nil : row.string(11)
             rows.append(UsageRecord(
                 timestamp: ts,
                 sessionId: sessionId,
@@ -174,7 +207,8 @@ public final class CacheStore {
                 cacheReadTokens: row.int(7),
                 cacheWriteTokens: row.int(8),
                 requestCount: row.double(9),
-                premiumCost: cost
+                premiumCost: cost,
+                remoteName: remote
             ))
         }
         return rows

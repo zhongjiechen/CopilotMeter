@@ -9,11 +9,16 @@ struct PopoverView: View {
             header
             SourceLegend()
             tilesRow
+            HostsPanel(refresher: refresher)
             Divider()
             SelectedWindowDetail(
                 window: selectedWindow,
                 stats: refresher.snapshot.byWindow[selectedWindow] ?? .zero,
                 blindChat: refresher.snapshot.blindChatByWindow[selectedWindow] ?? 0
+            )
+            RemotesStrip(
+                window: selectedWindow,
+                byRemote: refresher.snapshot.byWindowByRemote[selectedWindow] ?? [:]
             )
             Divider()
             ModelBreakdown(
@@ -79,12 +84,12 @@ struct PopoverView: View {
             }
             Spacer()
             Button {
-                refresher.refresh()
+                refresher.refreshNow()
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
             .buttonStyle(.borderless)
-            .help("Refresh now")
+            .help("Refresh now (also re-runs remote sync)")
             .disabled(refresher.isRefreshing)
 
             Button("Quit") {

@@ -31,4 +31,36 @@ public struct UsageRecord: Hashable, Codable, Sendable {
     public let requestCount: Double
     /// "Premium request cost" as recorded by Copilot, when available; nil for per-message records
     public let premiumCost: Double?
+    /// Non-nil when this record was pulled from a remote host's
+    /// ~/.copilot/session-state via SSH. The string is the user-chosen
+    /// nickname from `remotes.json` (e.g. "workstation", "l40").
+    public let remoteName: String?
+
+    public init(
+        timestamp: Date,
+        sessionId: String,
+        messageId: String?,
+        source: Source,
+        model: String,
+        outputTokens: Int,
+        inputTokens: Int,
+        cacheReadTokens: Int,
+        cacheWriteTokens: Int,
+        requestCount: Double,
+        premiumCost: Double?,
+        remoteName: String? = nil
+    ) {
+        self.timestamp = timestamp
+        self.sessionId = sessionId
+        self.messageId = messageId
+        self.source = source
+        self.model = model
+        self.outputTokens = outputTokens
+        self.inputTokens = inputTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.cacheWriteTokens = cacheWriteTokens
+        self.requestCount = requestCount
+        self.premiumCost = premiumCost
+        self.remoteName = remoteName
+    }
 }
