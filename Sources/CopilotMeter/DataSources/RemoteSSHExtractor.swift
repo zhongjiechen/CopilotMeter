@@ -64,7 +64,7 @@ public enum RemoteSSHExtractor {
 
     /// Parsed event payloads we re-hydrate into UsageRecords.
     public enum ExtractedEvent {
-        case sessionStartedWithModel(sid: String, ts: Date, selectedModel: String)
+        case sessionInfo(sid: String, ts: Date, selectedModel: String?, hostType: String?)
         case assistantMessage(sid: String, ts: Date, model: String?, messageId: String?, outputTokens: Int)
         case sessionShutdownRow(sid: String, ts: Date, model: String, inputTokens: Int, cacheRead: Int, cacheWrite: Int, premiumCost: Double?)
         case sessionEnded(sid: String)
@@ -224,9 +224,14 @@ public enum RemoteSSHExtractor {
             let t = obj["t"] as? String
             switch t {
             case "init":
-                if let sm = obj["sm"] as? String {
-                    out.append(.sessionStartedWithModel(sid: sid, ts: parseTimestamp(obj["ts"] as? String), selectedModel: sm))
-                }
+                let sm = obj["sm"] as? String
+                let ht = obj["ht"] as? String
+                out.append(.sessionInfo(
+                    sid: sid,
+                    ts: parseTimestamp(obj["ts"] as? String),
+                    selectedModel: sm,
+                    hostType: ht
+                ))
             case "m":
                 let outputTokens = (obj["out"] as? Int) ?? 0
                 out.append(.assistantMessage(

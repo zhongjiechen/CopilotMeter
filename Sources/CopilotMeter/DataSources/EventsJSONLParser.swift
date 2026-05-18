@@ -21,6 +21,9 @@ public final class EventsJSONLParser {
         public let lastEventAt: Date?
         /// True when a session.shutdown event was observed.
         public let sessionEnded: Bool
+        /// `context.hostType` from session.start, when present. Used by the
+        /// caller to classify the session source as Coding Agent vs CLI etc.
+        public let hostType: String?
     }
 
     private static let iso8601: ISO8601DateFormatter = {
@@ -44,7 +47,7 @@ public final class EventsJSONLParser {
     public func parse(file: URL, fromByteOffset: Int64 = 0, source: UsageRecord.Source, remoteName: String? = nil) throws -> ParseResult {
         let sessionId = file.deletingLastPathComponent().lastPathComponent
         guard let handle = try? FileHandle(forReadingFrom: file) else {
-            return ParseResult(records: [], lastByteOffset: fromByteOffset, sessionId: sessionId, lastEventAt: nil, sessionEnded: false)
+            return ParseResult(records: [], lastByteOffset: fromByteOffset, sessionId: sessionId, lastEventAt: nil, sessionEnded: false, hostType: nil)
         }
         defer { try? handle.close() }
 
@@ -57,6 +60,7 @@ public final class EventsJSONLParser {
         // Track the session's selected model so we can fill in records where the
         // per-message event omits "model" (older event-log format).
         var sessionModel: String?
+        var hostType: String?
 
         // Split on newlines; tolerate a trailing partial line (don't advance past it).
         var consumedBytesInChunk: Int64 = 0
@@ -69,7 +73,7 @@ public final class EventsJSONLParser {
                 lineStart = i + 1
                 guard !lineBytes.isEmpty else { continue }
                 if let parsed = try? JSONSerialization.jsonObject(with: lineBytes) as? [String: Any] {
-                    if let r = handleEvent(parsed, sessionId: sessionId, source: source, remoteName: remoteName, sessionModel: &sessionModel, lastEventAt: &lastEventAt) {
+                    if let r = handleEvent(parsed, sessionId: sessionId, source: source, remoteName: remoteName, sessionModel: &sessionModel, hostType: &hostType, lastEventAt: &lastEventAt) {
                         records.append(contentsOf: r.records)
                         if r.shutdown { sessionEnded = true }
                     }
@@ -83,7 +87,8 @@ public final class EventsJSONLParser {
             lastByteOffset: newOffset,
             sessionId: sessionId,
             lastEventAt: lastEventAt,
-            sessionEnded: sessionEnded
+            sessionEnded: sessionEnded,
+            hostType: hostType
         )
     }
 
@@ -98,6 +103,7 @@ public final class EventsJSONLParser {
         source: UsageRecord.Source,
         remoteName: String?,
         sessionModel: inout String?,
+        hostType: inout String?,
         lastEventAt: inout Date?
     ) -> EventOutcome? {
         guard let type = evt["type"] as? String else { return nil }
@@ -107,10 +113,14 @@ public final class EventsJSONLParser {
 
         switch type {
         case "session.start":
-            if let data = evt["data"] as? [String: Any],
-               let m = data["selectedModel"] as? String,
-               !m.isEmpty {
-                sessionModel = m
+            if let data = evt["data"] as? [String: Any] {
+                if let m = data["selectedModel"] as? String, !m.isEmpty {
+                    sessionModel = m
+                }
+                if let ctx = data["context"] as? [String: Any],
+                   let ht = ctx["hostType"] as? String, !ht.isEmpty {
+                    hostType = ht
+                }
             }
             return nil
 
