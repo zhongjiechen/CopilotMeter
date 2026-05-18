@@ -39,7 +39,9 @@ public final class EventsJSONLParser {
 
     /// Parse one file starting from `fromByteOffset`. Returns new records and the
     /// new byte offset (so callers can resume incrementally).
-    public func parse(file: URL, fromByteOffset: Int64 = 0, source: UsageRecord.Source) throws -> ParseResult {
+    /// `remoteName` is propagated onto every produced `UsageRecord` so the UI
+    /// can attribute the activity to a specific remote SSH host.
+    public func parse(file: URL, fromByteOffset: Int64 = 0, source: UsageRecord.Source, remoteName: String? = nil) throws -> ParseResult {
         let sessionId = file.deletingLastPathComponent().lastPathComponent
         guard let handle = try? FileHandle(forReadingFrom: file) else {
             return ParseResult(records: [], lastByteOffset: fromByteOffset, sessionId: sessionId, lastEventAt: nil, sessionEnded: false)
@@ -67,7 +69,7 @@ public final class EventsJSONLParser {
                 lineStart = i + 1
                 guard !lineBytes.isEmpty else { continue }
                 if let parsed = try? JSONSerialization.jsonObject(with: lineBytes) as? [String: Any] {
-                    if let r = handleEvent(parsed, sessionId: sessionId, source: source, sessionModel: &sessionModel, lastEventAt: &lastEventAt) {
+                    if let r = handleEvent(parsed, sessionId: sessionId, source: source, remoteName: remoteName, sessionModel: &sessionModel, lastEventAt: &lastEventAt) {
                         records.append(contentsOf: r.records)
                         if r.shutdown { sessionEnded = true }
                     }
@@ -94,6 +96,7 @@ public final class EventsJSONLParser {
         _ evt: [String: Any],
         sessionId: String,
         source: UsageRecord.Source,
+        remoteName: String?,
         sessionModel: inout String?,
         lastEventAt: inout Date?
     ) -> EventOutcome? {
@@ -113,8 +116,6 @@ public final class EventsJSONLParser {
 
         case "assistant.message":
             guard let data = evt["data"] as? [String: Any] else { return nil }
-            // Newer event format has "model" per message; older format relies on
-            // the session-level selectedModel captured from session.start.
             let model = (data["model"] as? String) ?? sessionModel ?? "unknown"
             let outputTokens = (data["outputTokens"] as? Int) ?? 0
             let messageId = data["messageId"] as? String
@@ -129,7 +130,8 @@ public final class EventsJSONLParser {
                 cacheReadTokens: 0,
                 cacheWriteTokens: 0,
                 requestCount: 1,
-                premiumCost: nil
+                premiumCost: nil,
+                remoteName: remoteName
             )
             return EventOutcome(records: [rec], shutdown: false)
 
@@ -159,7 +161,8 @@ public final class EventsJSONLParser {
                     cacheReadTokens: cacheRead,
                     cacheWriteTokens: cacheWrite,
                     requestCount: 0,
-                    premiumCost: cost
+                    premiumCost: cost,
+                    remoteName: remoteName
                 ))
             }
             return EventOutcome(records: rows, shutdown: true)

@@ -69,7 +69,9 @@ public final class VSCodeChatReader {
     /// Returns an empty array — never throws — when the DB doesn't exist or
     /// has an unexpected schema (e.g. the extension is installed but the chat
     /// panel has never been opened).
-    public func chatInteractions(since: Date? = nil) -> [UsageRecord] {
+    ///
+    /// `remoteName` is propagated onto every emitted record.
+    public func chatInteractions(since: Date? = nil, remoteName: String? = nil) -> [UsageRecord] {
         guard hasExpectedSchema() else { return [] }
         guard let db = try? SQLite(path: path, readOnly: true) else { return [] }
         var rows: [UsageRecord] = []
@@ -108,7 +110,8 @@ public final class VSCodeChatReader {
                     cacheReadTokens: 0,
                     cacheWriteTokens: 0,
                     requestCount: 1,
-                    premiumCost: nil
+                    premiumCost: nil,
+                    remoteName: remoteName
                 )
                 rows.append(rec)
             }
