@@ -36,6 +36,11 @@ public final class UsageRefresher: ObservableObject {
 
     private var timer: Timer?
     private var inFlight: Task<Void, Never>?
+    /// Independent slow-cadence timer for remote refresh.
+    private var remoteTimer: Timer?
+    /// Set when refresh(includeRemotes:) was called while another refresh was
+    /// in flight. We rerun with remotes as soon as the current refresh finishes.
+    private var pendingIncludeRemotes: Bool = false
 
     public init(sessionStateDir: URL? = nil, cachePath: String = CacheStore.defaultPath) {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -61,15 +66,14 @@ public final class UsageRefresher: ObservableObject {
         // First refresh: local sources only (instant), remote will follow when
         // its slower timer ticks.
         refresh()
-        // Kick off the first remote sync immediately after launch so the user
-        // gets data into the cache as soon as the long initial rsync completes.
+        // Kick off the first remote sync ~10 s after launch, giving the local
+        // refresh comfortable headroom to complete first.
         if !enabledRemotes.isEmpty {
-            scheduleRemoteRefresh(after: 1)
+            scheduleRemoteRefresh(after: 10)
         }
     }
 
     /// Independent slow-cadence timer for remote refresh.
-    private var remoteTimer: Timer?
 
     private func scheduleRemoteRefresh(after delay: TimeInterval) {
         remoteTimer?.invalidate()
@@ -147,7 +151,13 @@ public final class UsageRefresher: ObservableObject {
     }
 
     public func refresh(includeRemotes: Bool = false) {
-        guard !isRefreshing else { return }
+        if isRefreshing {
+            // Another refresh is in flight. If the caller wanted remote data
+            // and the in-flight refresh might not include it, remember to
+            // re-run as soon as the current one finishes.
+            if includeRemotes { pendingIncludeRemotes = true }
+            return
+        }
         isRefreshing = true
         let dir = self.sessionStateDir
         let cachePath = self.cachePath
@@ -178,6 +188,12 @@ public final class UsageRefresher: ObservableObject {
                     self.remoteStatus[status.host] = status
                 }
                 self.isRefreshing = false
+                // If a remote refresh was requested while we were busy with a
+                // local-only refresh, run it now.
+                if self.pendingIncludeRemotes {
+                    self.pendingIncludeRemotes = false
+                    self.refresh(includeRemotes: true)
+                }
             }
         }
     }
@@ -237,30 +253,28 @@ enum RefreshWorker {
             phaseErrors.append(PathScrubber.scrub("VS Code Chat: \(error)"))
         }
 
-        // ----- Remote sources (over SSH/rsync) -----
+        // ----- Remote sources (streamed extractor over SSH) -----
+        let extractorScript = remoteExtractorScriptPath()
+
         for remote in remotes {
-            let outcome = RemoteSSHSyncer.sync(remote)
-            var hostErrors = outcome.errors
-            for e in outcome.errors {
-                phaseErrors.append("\(remote.name): \(PathScrubber.scrub(e))")
+            var hostErrors: [String] = []
+            var success = false
+
+            // Pull token-relevant events via the remote-side extractor.
+            do {
+                let result = try RemoteSSHExtractor.extract(remote, scriptPath: extractorScript)
+                try ingestExtractedEvents(result.events, into: cache, remoteName: remote.name)
+                success = true
+            } catch {
+                let msg = "extract: \(PathScrubber.scrub("\(error)"))"
+                hostErrors.append(msg)
+                phaseErrors.append("\(remote.name) \(msg)")
             }
 
-            if outcome.pulledSessionState {
-                let dir = RemoteSSHSyncer.sessionStateMirror(for: remote)
-                do {
-                    try ingestEventsJSONL(
-                        into: cache, parser: parser,
-                        vsCodeIds: [], dir: dir, remoteName: remote.name
-                    )
-                } catch {
-                    let msg = "events: \(PathScrubber.scrub("\(error)"))"
-                    hostErrors.append(msg)
-                    phaseErrors.append("\(remote.name) \(msg)")
-                }
-            }
-
-            if outcome.pulledVscodeChatDb {
-                let dbPath = RemoteSSHSyncer.vscodeChatDbPath(for: remote).path
+            // Also pull the VS Code Copilot Chat DB if configured.
+            let pulledChat = RemoteSSHExtractor.pullVscodeChatDb(remote)
+            if pulledChat {
+                let dbPath = RemoteSSHExtractor.vscodeChatDbPath(for: remote).path
                 let remoteReader = VSCodeChatReader(path: dbPath)
                 do {
                     try ingestVSCodeChat(into: cache, reader: remoteReader, remoteName: remote.name)
@@ -271,13 +285,11 @@ enum RefreshWorker {
                 }
             }
 
-            let phase: RemoteSyncStatus.Phase = (outcome.errors.isEmpty && hostErrors.count == outcome.errors.count)
-                ? .success
-                : .failed
+            let phase: RemoteSyncStatus.Phase = success ? .success : .failed
             remoteStatuses.append(RemoteSyncStatus(
                 host: remote.name,
                 phase: phase,
-                lastSyncedAt: phase == .success ? Date() : nil,
+                lastSyncedAt: success ? Date() : nil,
                 lastError: hostErrors.first
             ))
         }
@@ -285,6 +297,77 @@ enum RefreshWorker {
         let records = (try? cache.allRecords()) ?? []
         let snap = UsageAggregator().snapshot(records: records)
         return Result(snapshot: snap, errorMessage: phaseErrors.first, remoteStatuses: remoteStatuses)
+    }
+
+    /// Locates `remote_extract.py` inside the .app bundle. Falls back to a
+    /// dev-time path under the source tree when running unbundled.
+    private static func remoteExtractorScriptPath() -> String {
+        // 1. Inside an .app bundle, Bundle.main.resourcePath is Contents/Resources.
+        if let bundlePath = Bundle.main.path(forResource: "remote_extract", ofType: "py") {
+            return bundlePath
+        }
+        if let rp = Bundle.main.resourcePath {
+            let candidate = "\(rp)/remote_extract.py"
+            if FileManager.default.fileExists(atPath: candidate) { return candidate }
+        }
+        // 2. Running unbundled (e.g. `swift run`): try the source-tree
+        // Resources/ dir relative to the executable.
+        let exe = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        let exeURL = URL(fileURLWithPath: exe).deletingLastPathComponent()
+        let devCandidate = exeURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Resources/remote_extract.py")
+        if FileManager.default.fileExists(atPath: devCandidate.path) { return devCandidate.path }
+        // 3. Last resort: a fixed path checked into the repo.
+        return "/usr/local/share/copilotmeter/remote_extract.py"
+    }
+
+    /// Hydrates `UsageRecord`s from the JSONL stream returned by
+    /// `RemoteSSHExtractor.extract`, then inserts them.
+    private static func ingestExtractedEvents(
+        _ events: [RemoteSSHExtractor.ExtractedEvent],
+        into cache: CacheStore,
+        remoteName: String
+    ) throws {
+        // We need the session.start selectedModel to fill in 'model' for old
+        // assistant.message rows that lack it. Build a sid -> model map.
+        var sessionModel: [String: String] = [:]
+        for e in events {
+            if case .sessionStartedWithModel(let sid, _, let sm) = e {
+                sessionModel[sid] = sm
+            }
+        }
+
+        for e in events {
+            switch e {
+            case .assistantMessage(let sid, let ts, let model, let messageId, let outputTokens):
+                let resolvedModel = model ?? sessionModel[sid] ?? "unknown"
+                let rec = UsageRecord(
+                    timestamp: ts, sessionId: sid, messageId: messageId,
+                    source: .copilotCLI, model: resolvedModel,
+                    outputTokens: outputTokens,
+                    inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+                    requestCount: 1, premiumCost: nil, remoteName: remoteName
+                )
+                try cache.insertRecord(rec, kind: .message)
+
+            case .sessionShutdownRow(let sid, let ts, let model, let input, let cr, let cw, let cost):
+                if input == 0 && cr == 0 && cw == 0 && cost == nil { continue }
+                let rec = UsageRecord(
+                    timestamp: ts, sessionId: sid, messageId: nil,
+                    source: .copilotCLI, model: model,
+                    outputTokens: 0,
+                    inputTokens: input, cacheReadTokens: cr, cacheWriteTokens: cw,
+                    requestCount: 0, premiumCost: cost, remoteName: remoteName
+                )
+                try cache.insertRecord(rec, kind: .shutdown)
+
+            case .sessionStartedWithModel, .sessionEnded, .fileOffset:
+                break
+            }
+        }
     }
 
     private static func ingestEventsJSONL(

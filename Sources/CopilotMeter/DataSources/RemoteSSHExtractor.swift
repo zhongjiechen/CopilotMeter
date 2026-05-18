@@ -1,0 +1,281 @@
+import Foundation
+
+/// Pulls Copilot usage data from a remote host by streaming a small Python
+/// extractor over SSH and reading back a compact JSONL stream of just the
+/// token-relevant events. This is dramatically more efficient than rsync'ing
+/// the entire events.jsonl tree: a 200 MB session-state directory typically
+/// yields a ~3 MB stream on first run and ~1 KB on subsequent runs.
+///
+/// The extractor script (`Resources/remote_extract.py`) is shipped inside
+/// the .app bundle so users don't need to install anything on the remote.
+/// We just `ssh host 'python3 -' < extractor.py "<base64-offsets>"`.
+///
+/// VS Code Copilot Chat data (the SQLite DB) is small (a few MB), schema-
+/// stable, and not amenable to streaming-style extraction, so we still
+/// rsync that file when present.
+public enum RemoteSSHExtractor {
+
+    public struct ExtractOutcome {
+        public let remote: String
+        public let pulledSessionState: Bool
+        public let pulledVscodeChatDb: Bool
+        public let errors: [String]
+        /// Approximate compressed bytes received from the remote (for the
+        /// extractor stream). Useful for stats in the UI.
+        public let extractorBytes: Int
+    }
+
+    /// Per-remote cache root mirrors the directory layout the rsync-based
+    /// implementation used, so existing logic that reads from
+    /// `mirrorRoot/vscode-chat/session-store.db` keeps working.
+    public static func mirrorRoot(for remote: RemoteHost) -> URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home
+            .appendingPathComponent("Library/Application Support/CopilotMeter/remotes")
+            .appendingPathComponent(remote.name)
+    }
+    public static func vscodeChatDbPath(for remote: RemoteHost) -> URL {
+        mirrorRoot(for: remote)
+            .appendingPathComponent("vscode-chat")
+            .appendingPathComponent("session-store.db")
+    }
+    public static func offsetsCachePath(for remote: RemoteHost) -> URL {
+        mirrorRoot(for: remote)
+            .appendingPathComponent("offsets.json")
+    }
+
+    public enum ExtractError: Error, CustomStringConvertible {
+        case scriptMissing
+        case sshFailed(exitCode: Int32, stderr: String)
+        case rsyncFailed(exitCode: Int32, stderr: String)
+        public var description: String {
+            switch self {
+            case .scriptMissing:
+                return "remote_extract.py not found in app bundle"
+            case .sshFailed(let c, let s):
+                let snippet = s.split(separator: "\n").prefix(2).joined(separator: " · ")
+                return "ssh exit \(c)\(snippet.isEmpty ? "" : ": \(snippet)")"
+            case .rsyncFailed(let c, let s):
+                let snippet = s.split(separator: "\n").prefix(2).joined(separator: " · ")
+                return "rsync exit \(c)\(snippet.isEmpty ? "" : ": \(snippet)")"
+            }
+        }
+    }
+
+    /// Parsed event payloads we re-hydrate into UsageRecords.
+    public enum ExtractedEvent {
+        case sessionStartedWithModel(sid: String, ts: Date, selectedModel: String)
+        case assistantMessage(sid: String, ts: Date, model: String?, messageId: String?, outputTokens: Int)
+        case sessionShutdownRow(sid: String, ts: Date, model: String, inputTokens: Int, cacheRead: Int, cacheWrite: Int, premiumCost: Double?)
+        case sessionEnded(sid: String)
+        case fileOffset(sid: String, byteOffset: Int64)
+    }
+
+    public struct ExtractResult {
+        public let events: [ExtractedEvent]
+        public let bytesReceived: Int
+    }
+
+    /// Runs the extractor on `remote` and returns parsed events.
+    /// Persists the new offsets to `offsetsCachePath(for:)` on success so the
+    /// next invocation only fetches new events.
+    public static func extract(_ remote: RemoteHost, scriptPath: String) throws -> ExtractResult {
+        guard FileManager.default.fileExists(atPath: scriptPath) else {
+            throw ExtractError.scriptMissing
+        }
+        try FileManager.default.createDirectory(at: mirrorRoot(for: remote), withIntermediateDirectories: true)
+
+        let offsetsB64 = loadOffsetsAsBase64(for: remote)
+
+        let sshCommand: String = {
+            // ssh runs `python3 - '<base64-offsets>'`; our stdin to ssh becomes
+            // python's stdin (= the script source).
+            "python3 - '\(offsetsB64)'"
+        }()
+
+        var sshArgs: [String] = [
+            "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=8",
+        ]
+        if let key = remote.identityFile, !key.isEmpty {
+            sshArgs.append(contentsOf: ["-i", key])
+        }
+        sshArgs.append(remote.sshHost)
+        sshArgs.append(sshCommand)
+
+        let proc = Process()
+        proc.launchPath = "/usr/bin/ssh"
+        proc.arguments = sshArgs
+
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        proc.standardInput = stdinPipe
+        proc.standardOutput = stdoutPipe
+        proc.standardError = stderrPipe
+
+        try proc.run()
+
+        // Feed the script to ssh's stdin. Write in a background task so we
+        // don't deadlock if the script output fills the pipe before we
+        // finish writing.
+        let scriptData = (try? Data(contentsOf: URL(fileURLWithPath: scriptPath))) ?? Data()
+        DispatchQueue.global(qos: .utility).async {
+            do {
+                try stdinPipe.fileHandleForWriting.write(contentsOf: scriptData)
+            } catch {}
+            try? stdinPipe.fileHandleForWriting.close()
+        }
+
+        let outData = (try? stdoutPipe.fileHandleForReading.readToEnd()) ?? Data()
+        let errData = (try? stderrPipe.fileHandleForReading.readToEnd()) ?? Data()
+        proc.waitUntilExit()
+
+        if proc.terminationStatus != 0 {
+            let stderr = String(data: errData, encoding: .utf8) ?? ""
+            throw ExtractError.sshFailed(exitCode: proc.terminationStatus, stderr: stderr)
+        }
+
+        let events = parseStream(outData)
+
+        // Persist new offsets for the next run.
+        var newOffsets: [String: Int64] = [:]
+        for e in events {
+            if case .fileOffset(let sid, let off) = e {
+                newOffsets[sid] = off
+            }
+        }
+        saveOffsets(newOffsets, for: remote)
+
+        return ExtractResult(events: events, bytesReceived: outData.count)
+    }
+
+    /// Pulls the remote's VS Code Copilot Chat session-store.db via rsync.
+    /// Returns true on success, false if the remote path doesn't exist or
+    /// rsync fails (which we treat as non-fatal — the user simply hasn't used
+    /// VS Code Chat on that machine).
+    public static func pullVscodeChatDb(_ remote: RemoteHost) -> Bool {
+        guard !remote.vscodeChatDbDir.isEmpty else { return false }
+        let localDir = mirrorRoot(for: remote).appendingPathComponent("vscode-chat")
+        try? FileManager.default.createDirectory(at: localDir, withIntermediateDirectories: true)
+
+        let src: String
+        if remote.vscodeChatDbDir.hasSuffix("/") {
+            src = "\(remote.sshHost):\(remote.vscodeChatDbDir)session-store.db"
+        } else {
+            src = "\(remote.sshHost):\(remote.vscodeChatDbDir)/session-store.db"
+        }
+
+        var sshCmd = "ssh -o BatchMode=yes -o ConnectTimeout=8"
+        if let key = remote.identityFile, !key.isEmpty {
+            sshCmd += " -i \(shellEscape(key))"
+        }
+
+        let proc = Process()
+        proc.launchPath = "/usr/bin/rsync"
+        proc.arguments = [
+            "-a", "--no-perms", "--no-owner", "--no-group",
+            "-e", sshCmd,
+            src,
+            localDir.path + "/"
+        ]
+        let stderrPipe = Pipe()
+        proc.standardError = stderrPipe
+        proc.standardOutput = Pipe()
+        do { try proc.run() } catch { return false }
+        proc.waitUntilExit()
+        return proc.terminationStatus == 0
+    }
+
+    // MARK: - parsing
+
+    private static let iso8601Frac: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let iso8601: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    private static func parseTimestamp(_ s: String?) -> Date {
+        guard let s else { return Date() }
+        return iso8601Frac.date(from: s) ?? iso8601.date(from: s) ?? Date()
+    }
+
+    private static func parseStream(_ data: Data) -> [ExtractedEvent] {
+        var out: [ExtractedEvent] = []
+        var lineStart = 0
+        let bytes = [UInt8](data)
+        for i in 0..<bytes.count {
+            guard bytes[i] == 0x0A else { continue }
+            let lineBytes = Data(bytes[lineStart..<i])
+            lineStart = i + 1
+            guard !lineBytes.isEmpty,
+                  let obj = try? JSONSerialization.jsonObject(with: lineBytes) as? [String: Any] else { continue }
+            guard let sid = obj["sid"] as? String else { continue }
+
+            if let off = obj["off"] as? Int {
+                out.append(.fileOffset(sid: sid, byteOffset: Int64(off)))
+                continue
+            }
+            let t = obj["t"] as? String
+            switch t {
+            case "init":
+                if let sm = obj["sm"] as? String {
+                    out.append(.sessionStartedWithModel(sid: sid, ts: parseTimestamp(obj["ts"] as? String), selectedModel: sm))
+                }
+            case "m":
+                let outputTokens = (obj["out"] as? Int) ?? 0
+                out.append(.assistantMessage(
+                    sid: sid,
+                    ts: parseTimestamp(obj["ts"] as? String),
+                    model: obj["model"] as? String,
+                    messageId: obj["mid"] as? String,
+                    outputTokens: outputTokens
+                ))
+            case "s":
+                guard let model = obj["model"] as? String else { continue }
+                out.append(.sessionShutdownRow(
+                    sid: sid,
+                    ts: parseTimestamp(obj["ts"] as? String),
+                    model: model,
+                    inputTokens: (obj["in"] as? Int) ?? 0,
+                    cacheRead: (obj["cr"] as? Int) ?? 0,
+                    cacheWrite: (obj["cw"] as? Int) ?? 0,
+                    premiumCost: (obj["cost"] as? Double)
+                ))
+            case "end":
+                out.append(.sessionEnded(sid: sid))
+            default:
+                break
+            }
+        }
+        return out
+    }
+
+    // MARK: - offsets persistence
+
+    private static func loadOffsetsAsBase64(for remote: RemoteHost) -> String {
+        let path = offsetsCachePath(for: remote).path
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else {
+            return Data("{}".utf8).base64EncodedString()
+        }
+        return data.base64EncodedString()
+    }
+
+    private static func saveOffsets(_ offsets: [String: Int64], for remote: RemoteHost) {
+        let path = offsetsCachePath(for: remote).path
+        guard let data = try? JSONSerialization.data(withJSONObject: offsets) else { return }
+        try? data.write(to: URL(fileURLWithPath: path), options: [.atomic])
+    }
+
+    // MARK: - util
+
+    private static func shellEscape(_ s: String) -> String {
+        if s.range(of: "[^A-Za-z0-9_./@~-]", options: .regularExpression) == nil { return s }
+        return "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
