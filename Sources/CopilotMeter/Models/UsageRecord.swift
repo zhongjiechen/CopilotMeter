@@ -35,7 +35,7 @@ public struct UsageRecord: Hashable, Codable, Sendable {
     public let premiumCost: Double?
     /// Non-nil when this record was pulled from a remote host's
     /// ~/.copilot/session-state via SSH. The string is the user-chosen
-    /// nickname from `remotes.json` (e.g. "host", "host").
+    /// nickname from `remotes.json`.
     public let remoteName: String?
 
     public init(

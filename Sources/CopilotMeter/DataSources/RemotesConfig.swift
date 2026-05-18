@@ -16,8 +16,8 @@ import Foundation
 public struct RemoteHost: Codable, Sendable, Identifiable {
     /// User-chosen nickname (used as a folder name and displayed in the UI).
     public let name: String
-    /// What you'd type after `ssh ` — e.g. `"user@host"` or just
-    /// `"host"` if your ~/.ssh/config takes care of it.
+    /// What you'd type after `ssh ` — i.e. a Host alias from your
+    /// `~/.ssh/config`, or `user@host` style.
     public let sshHost: String
     /// Absolute or `~/`-prefixed path on the remote. Empty string disables.
     public let sessionStateDir: String
@@ -70,7 +70,7 @@ public struct RemoteHost: Codable, Sendable, Identifiable {
 /// ```json
 /// {
 ///   "remotes": [
-///     { "name": "host", "ssh_host": "user@host" }
+///     { "name": "devbox", "ssh_host": "devbox" }
 ///   ]
 /// }
 /// ```
@@ -80,10 +80,10 @@ public struct RemoteHost: Codable, Sendable, Identifiable {
 /// {
 ///   "remotes": [
 ///     {
-///       "name": "host",
-///       "ssh_host": "user@host",
-///       "session_state_dir": "/home/user/.copilot/session-state",
-///       "vscode_chat_db_dir": "/home/user/.vscode-server/data/User/globalStorage/github.copilot-chat",
+///       "name": "devbox",
+///       "ssh_host": "user@host.example.com",
+///       "session_state_dir": "~/.copilot/session-state",
+///       "vscode_chat_db_dir": "~/.vscode-server/data/User/globalStorage/github.copilot-chat",
 ///       "identity_file": "~/.ssh/id_ed25519"
 ///     }
 ///   ]
