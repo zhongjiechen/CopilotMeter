@@ -3,7 +3,7 @@ APP_NAME := CopilotMeter
 BUILD_DIR := build
 APP_BUNDLE := $(BUILD_DIR)/$(APP_NAME).app
 
-.PHONY: build app run debug clean install uninstall reset-cache icon
+.PHONY: build app dmg run debug clean install uninstall reset-cache icon
 
 build:
 	@arch -arm64 swift build -c release --arch arm64
@@ -13,6 +13,9 @@ icon:
 
 app:
 	@bash Scripts/build-app.sh
+
+dmg: app
+	@bash Scripts/build-dmg.sh
 
 run: app
 	@open "$(APP_BUNDLE)"
