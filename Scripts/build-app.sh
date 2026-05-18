@@ -42,6 +42,9 @@ if [[ ! -f "$ROOT/Resources/AppIcon.icns" ]]; then
 fi
 cp "$ROOT/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 
+# Remote-side extractor (runs over SSH on remote hosts via `python3 -`).
+cp "$ROOT/Resources/remote_extract.py" "$APP_BUNDLE/Contents/Resources/remote_extract.py"
+
 # Ad-hoc codesign so macOS lets us launch it.
 codesign --force --deep --sign - "$APP_BUNDLE" >/dev/null
 

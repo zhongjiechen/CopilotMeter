@@ -13,7 +13,7 @@ struct HostsPanel: View {
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Heads up: the FIRST sync of a remote can take 5–10 minutes (it has to pull the whole ~/.copilot/session-state). After that, each refresh is incremental and finishes in seconds. Remote refresh runs automatically once an hour; tap ↻ in the footer to force one now.")
+                Text("First sync of a busy host typically completes in 10–30 seconds (a tiny Python extractor runs on the remote and streams back only the token-relevant events — usually < 3 MB). Subsequent refreshes are incremental and finish in a few seconds. Remote refresh runs automatically once an hour; tap ↻ in the footer to force one now.")
                     .font(.caption2)
                     .foregroundStyle(.orange.opacity(0.85))
                     .fixedSize(horizontal: false, vertical: true)
@@ -34,7 +34,7 @@ struct HostsPanel: View {
                     }
                     .frame(maxHeight: 200)
                 }
-                Text("Each enabled host's `~/.copilot/session-state` and VS Code Copilot Chat DB are pulled via `rsync` over SSH. Data is cached at `~/Library/Application Support/CopilotMeter/remotes/`.")
+                Text("Each enabled host runs a small Python extractor over SSH that streams back only token-relevant events. Output (and the VS Code Chat DB when present) is cached at `~/Library/Application Support/CopilotMeter/remotes/`.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .padding(.top, 4)
