@@ -23,14 +23,40 @@ public final class VSCodeChatReader {
         FileManager.default.fileExists(atPath: path)
     }
 
+    /// True only when the file exists AND contains the expected `sessions`
+    /// table. VS Code's Copilot Chat extension only creates the schema after
+    /// the user opens the chat panel at least once; for users who have the
+    /// extension installed but never used it, the DB exists but is empty.
+    /// We treat that case as "no VS Code Chat data" rather than a hard error.
+    public func hasExpectedSchema() -> Bool {
+        guard fileExists else { return false }
+        guard let db = try? SQLite(path: path, readOnly: true) else { return false }
+        var found = false
+        let sql = "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions' LIMIT 1"
+        do {
+            try db.query(sql) { _ in found = true }
+        } catch {
+            return false
+        }
+        return found
+    }
+
     /// Returns the set of session IDs known to VS Code (used to classify
     /// events.jsonl sessions as CLI vs VS Code agent).
-    public func knownSessionIds() throws -> Set<String> {
-        guard fileExists else { return [] }
+    ///
+    /// Returns an empty set — never throws — when the DB doesn't exist, has
+    /// the wrong schema, or fails to open. Users without VS Code Copilot
+    /// Chat installed simply see all events.jsonl sessions classified as CLI.
+    public func knownSessionIds() -> Set<String> {
+        guard hasExpectedSchema() else { return [] }
+        guard let db = try? SQLite(path: path, readOnly: true) else { return [] }
         var ids: Set<String> = []
-        let db = try SQLite(path: path, readOnly: true)
-        try db.query("SELECT id FROM sessions") { row in
-            if let id = row.string(0) { ids.insert(id) }
+        do {
+            try db.query("SELECT id FROM sessions") { row in
+                if let id = row.string(0) { ids.insert(id) }
+            }
+        } catch {
+            return []
         }
         return ids
     }
@@ -39,9 +65,13 @@ public final class VSCodeChatReader {
     /// either NULL or "GitHub Copilot Chat" (i.e. ask/edit mode where no
     /// events.jsonl exists). Sessions running `copilotcli` agent are skipped here
     /// because they're already covered by events.jsonl parsing.
-    public func chatInteractions(since: Date? = nil) throws -> [UsageRecord] {
-        guard fileExists else { return [] }
-        let db = try SQLite(path: path, readOnly: true)
+    ///
+    /// Returns an empty array — never throws — when the DB doesn't exist or
+    /// has an unexpected schema (e.g. the extension is installed but the chat
+    /// panel has never been opened).
+    public func chatInteractions(since: Date? = nil) -> [UsageRecord] {
+        guard hasExpectedSchema() else { return [] }
+        guard let db = try? SQLite(path: path, readOnly: true) else { return [] }
         var rows: [UsageRecord] = []
 
         // We only count sessions whose agent_name is not the agent-mode marker.
@@ -60,26 +90,30 @@ public final class VSCodeChatReader {
                AND t.user_message IS NOT NULL
                AND length(t.user_message) > 0
         """
-        try db.query(sql) { row in
-            guard let sessionId = row.string(0) else { return }
-            let agent = row.string(1) ?? "GitHub Copilot Chat"
-            let tsString = row.string(2) ?? ""
-            guard let ts = Self.parseTimestamp(tsString) else { return }
-            if let since, ts < since { return }
-            let rec = UsageRecord(
-                timestamp: ts,
-                sessionId: sessionId,
-                messageId: nil,
-                source: .vscodeChat,
-                model: agent,
-                outputTokens: 0,
-                inputTokens: 0,
-                cacheReadTokens: 0,
-                cacheWriteTokens: 0,
-                requestCount: 1,
-                premiumCost: nil
-            )
-            rows.append(rec)
+        do {
+            try db.query(sql) { row in
+                guard let sessionId = row.string(0) else { return }
+                let agent = row.string(1) ?? "GitHub Copilot Chat"
+                let tsString = row.string(2) ?? ""
+                guard let ts = Self.parseTimestamp(tsString) else { return }
+                if let since, ts < since { return }
+                let rec = UsageRecord(
+                    timestamp: ts,
+                    sessionId: sessionId,
+                    messageId: nil,
+                    source: .vscodeChat,
+                    model: agent,
+                    outputTokens: 0,
+                    inputTokens: 0,
+                    cacheReadTokens: 0,
+                    cacheWriteTokens: 0,
+                    requestCount: 1,
+                    premiumCost: nil
+                )
+                rows.append(rec)
+            }
+        } catch {
+            return []
         }
         return rows
     }
