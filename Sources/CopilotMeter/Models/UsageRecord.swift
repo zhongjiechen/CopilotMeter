@@ -1,0 +1,34 @@
+import Foundation
+
+/// A single observation of Copilot usage, normalized across all data sources.
+public struct UsageRecord: Hashable, Codable, Sendable {
+    public enum Source: String, Codable, CaseIterable, Sendable {
+        case copilotCLI      // Terminal CLI sessions
+        case vscodeAgent     // VS Code Copilot agent / copilotcli mode (writes events.jsonl)
+        case vscodeChat      // VS Code "Ask" chat mode (no token data, count-only)
+        case unknown
+
+        public var displayName: String {
+            switch self {
+            case .copilotCLI: return "Copilot CLI"
+            case .vscodeAgent: return "VS Code Agent"
+            case .vscodeChat: return "VS Code Chat"
+            case .unknown: return "Unknown"
+            }
+        }
+    }
+
+    public let timestamp: Date
+    public let sessionId: String
+    public let messageId: String?
+    public let source: Source
+    public let model: String
+    public let outputTokens: Int
+    public let inputTokens: Int       // 0 for per-message records; populated only from session.shutdown summaries
+    public let cacheReadTokens: Int
+    public let cacheWriteTokens: Int
+    /// 1.0 for a single model API call; for session.shutdown summary rows this is the recorded `requests.count`
+    public let requestCount: Double
+    /// "Premium request cost" as recorded by Copilot, when available; nil for per-message records
+    public let premiumCost: Double?
+}
