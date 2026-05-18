@@ -66,24 +66,37 @@ enum RefreshWorker {
     }
 
     static func run(cachePath: String, sessionStateDir: URL) -> Result {
-        var errorMessage: String?
+        // Each ingestion phase is independent — a failure in one source must
+        // not prevent the other from contributing data to the snapshot.
+        // We collect any non-fatal errors and surface the first one to the UI.
+        var phaseErrors: [String] = []
+
+        let cache: CacheStore
         do {
-            let cache = try CacheStore(path: cachePath)
-            let parser = EventsJSONLParser()
-            let chatReader = VSCodeChatReader()
-            try ingestEventsJSONL(into: cache, parser: parser, chatReader: chatReader, dir: sessionStateDir)
-            try ingestVSCodeChat(into: cache, reader: chatReader)
-            let records = try cache.allRecords()
-            let snap = UsageAggregator().snapshot(records: records)
-            return Result(snapshot: snap, errorMessage: nil)
+            cache = try CacheStore(path: cachePath)
         } catch {
-            errorMessage = PathScrubber.scrub("\(error)")
+            return Result(snapshot: .empty,
+                          errorMessage: PathScrubber.scrub("Cache init failed: \(error)"))
         }
-        if let cache = try? CacheStore(path: cachePath), let recs = try? cache.allRecords() {
-            let snap = UsageAggregator().snapshot(records: recs)
-            return Result(snapshot: snap, errorMessage: errorMessage)
+
+        let parser = EventsJSONLParser()
+        let chatReader = VSCodeChatReader()
+
+        do {
+            try ingestEventsJSONL(into: cache, parser: parser, chatReader: chatReader, dir: sessionStateDir)
+        } catch {
+            phaseErrors.append(PathScrubber.scrub("Copilot events: \(error)"))
         }
-        return Result(snapshot: .empty, errorMessage: errorMessage)
+
+        do {
+            try ingestVSCodeChat(into: cache, reader: chatReader)
+        } catch {
+            phaseErrors.append(PathScrubber.scrub("VS Code Chat: \(error)"))
+        }
+
+        let records = (try? cache.allRecords()) ?? []
+        let snap = UsageAggregator().snapshot(records: records)
+        return Result(snapshot: snap, errorMessage: phaseErrors.first)
     }
 
     private static func ingestEventsJSONL(
@@ -94,7 +107,9 @@ enum RefreshWorker {
     ) throws {
         let fm = FileManager.default
         guard fm.fileExists(atPath: dir.path) else { return }
-        let vsCodeIds = (try? chatReader.knownSessionIds()) ?? []
+        // knownSessionIds() no longer throws — it returns [] for a missing or
+        // unfamiliar VS Code Copilot Chat DB.
+        let vsCodeIds = chatReader.knownSessionIds()
 
         let entries = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
         for sessionDir in entries {
@@ -138,9 +153,9 @@ enum RefreshWorker {
     }
 
     private static func ingestVSCodeChat(into cache: CacheStore, reader: VSCodeChatReader) throws {
-        guard reader.fileExists else { return }
+        guard reader.hasExpectedSchema() else { return }
         try cache.clearChatRecords()
-        let interactions = try reader.chatInteractions()
+        let interactions = reader.chatInteractions()
         for r in interactions {
             try cache.insertRecord(r, kind: .chat)
         }
