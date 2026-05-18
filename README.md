@@ -72,24 +72,39 @@ CopilotMeter reads three local files. **Nothing leaves your machine.**
 | `~/Library/Application Support/Code/User/globalStorage/github.copilot-chat/session-store.db` | VS Code Copilot Chat sessions whose `agent_name` is **not** `copilotcli` (i.e. "Ask" / "Edit" panels). These rows have no token data — they're counted as "blind interactions" with the model = `agent_name`. |
 | `~/Library/Application Support/CopilotMeter/cache.db` | Our own local cache. Stores parsed records keyed by `(session_id, message_id, kind, model)` plus a per-file byte offset, so subsequent refreshes only read the newly-appended JSONL bytes. |
 
-## Build & run
+## Install
+
+### The easy way — download the DMG
+
+Grab the latest **CopilotMeter.dmg** from the
+[Releases page](https://github.com/zhongjiechen/CopilotMeter/releases/latest),
+open it, drag the app onto `Applications`, and launch it. Then add
+**CopilotMeter** to **System Settings → General → Login Items** to have it
+start at login.
+
+> The DMG is ad-hoc codesigned (not notarised). The first time you launch
+> the app macOS may complain — right-click the app and choose **Open** once
+> to whitelist it.
+
+### From source
 
 Requires Xcode command line tools (Swift 5.9 +) on Apple Silicon.
 
 ```bash
+git clone https://github.com/zhongjiechen/CopilotMeter.git
+cd CopilotMeter
 make app             # builds Release arm64 and assembles CopilotMeter.app
 make run             # builds + opens the app
+make dmg             # builds + packages CopilotMeter.dmg for distribution
 make install         # copies CopilotMeter.app to /Applications
 make reset-cache     # wipe the local SQLite cache (forces a full reparse)
 make clean           # remove all build artifacts
-make icon            # regenerate Resources/AppIcon.icns from Scripts/generate-icon.sh
+make icon            # regenerate Resources/AppIcon.icns
 ```
 
 If your terminal is running under Rosetta (`uname -m` returns `x86_64` on an
 Apple Silicon Mac), the Makefile automatically prefixes the build with
 `arch -arm64` so you still get a native arm64 binary.
-
-After `make install`, add **CopilotMeter** to **System Settings → General → Login Items** to have it start at login.
 
 ### Preview / debug window
 
