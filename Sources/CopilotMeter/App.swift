@@ -53,8 +53,17 @@ final class PreviewWindowController {
 
     func show() {
         if window == nil {
+            // Position the preview window in the top-right of the main screen
+            // so it stays out of the way of arbitrary other-app windows when
+            // we screenshot it programmatically.
+            let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+            let winSize = NSSize(width: 540, height: 820)
+            let origin = NSPoint(
+                x: screen.maxX - winSize.width - 40,
+                y: screen.maxY - winSize.height - 40
+            )
             let w = NSWindow(
-                contentRect: NSRect(x: 200, y: 200, width: 540, height: 820),
+                contentRect: NSRect(origin: origin, size: winSize),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false
@@ -62,10 +71,9 @@ final class PreviewWindowController {
             w.title = "CopilotMeter — Preview"
             w.isReleasedWhenClosed = false
             w.isRestorable = false
-            // Keep preview window above other apps so it's easy to screenshot.
             w.level = .floating
             w.contentMinSize = NSSize(width: 540, height: 720)
-            w.setContentSize(NSSize(width: 540, height: 820))
+            w.setContentSize(winSize)
             w.makeKeyAndOrderFront(nil)
             NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
