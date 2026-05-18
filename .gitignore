@@ -1,0 +1,29 @@
+# Swift Package Manager / Xcode build artefacts
+.build/
+build/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+*.xcuserstate
+Package.resolved
+
+# Generated icon intermediates (the final AppIcon.icns is committed)
+.build/icon-tmp/
+
+# Local user data — NEVER commit your own Copilot usage cache
+cache.db
+cache.db-shm
+cache.db-wal
+
+# macOS file-system noise
+.DS_Store
+*.swp
+
+# Editor & IDE caches
+.idea/
+.vscode/
+*.iml
+
+# Logs
+*.log
