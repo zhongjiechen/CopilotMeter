@@ -234,6 +234,7 @@ enum RefreshWorker {
 
         let parser = EventsJSONLParser()
         let localChatReader = VSCodeChatReader()
+        let localTranscriptsReader = VSCodeChatTranscriptsReader(cache: cache)
 
         // ----- Local sources -----
         do {
@@ -245,6 +246,15 @@ enum RefreshWorker {
             )
         } catch {
             phaseErrors.append(PathScrubber.scrub("Copilot events: \(error)"))
+        }
+
+        // VS Code Chat workspace transcripts must run BEFORE the central DB
+        // ingest so the DB step can use the per-session transcript counts to
+        // skip overlapping sessions.
+        do {
+            _ = try localTranscriptsReader.ingest(remoteName: nil)
+        } catch {
+            phaseErrors.append(PathScrubber.scrub("VS Code Chat transcripts: \(error)"))
         }
 
         do {
@@ -260,7 +270,9 @@ enum RefreshWorker {
             var hostErrors: [String] = []
             var success = false
 
-            // Pull token-relevant events via the remote-side extractor.
+            // 1. Pull the small streamed extractor output (CLI events +
+            //    workspace transcript user.message events). Buffer in memory
+            //    so we can ingest after we know the central DB's classification.
             let extractResult: RemoteSSHExtractor.ExtractResult?
             do {
                 extractResult = try RemoteSSHExtractor.extract(remote, scriptPath: extractorScript)
@@ -272,24 +284,19 @@ enum RefreshWorker {
                 extractResult = nil
             }
 
-            // Also pull the VS Code Copilot Chat DB if configured — we need it
-            // both for the chat-mode interaction counts AND as a classification
-            // signal for events.jsonl session IDs.
+            // 2. Pull the central VS Code Chat DB (rsync). Needed for:
+            //    (a) classifying events.jsonl sessions as .vscodeAgent
+            //    (b) covering legacy sessions absent from per-workspace transcripts.
             let pulledChat = RemoteSSHExtractor.pullVscodeChatDb(remote)
             var remoteVsCodeIds: Set<String> = []
             if pulledChat {
                 let dbPath = RemoteSSHExtractor.vscodeChatDbPath(for: remote).path
-                let remoteReader = VSCodeChatReader(path: dbPath)
-                remoteVsCodeIds = remoteReader.knownSessionIds()
-                do {
-                    try ingestVSCodeChat(into: cache, reader: remoteReader, remoteName: remote.name)
-                } catch {
-                    let msg = "chat: \(PathScrubber.scrub("\(error)"))"
-                    hostErrors.append(msg)
-                    phaseErrors.append("\(remote.name) \(msg)")
-                }
+                remoteVsCodeIds = VSCodeChatReader(path: dbPath).knownSessionIds()
             }
 
+            // 3. Ingest the extracted events now that we have DB classification
+            //    info. Transcript user.message events land as
+            //    (source=.vscodeChat, kind=.message) so the next step can dedup.
             if let extractResult {
                 do {
                     try ingestExtractedEvents(
@@ -303,6 +310,20 @@ enum RefreshWorker {
                     hostErrors.append(msg)
                     phaseErrors.append("\(remote.name) \(msg)")
                     success = false
+                }
+            }
+
+            // 4. Ingest the central DB chat rows, skipping any session whose
+            //    per-workspace transcript already covered it as much or more.
+            if pulledChat {
+                let dbPath = RemoteSSHExtractor.vscodeChatDbPath(for: remote).path
+                let remoteReader = VSCodeChatReader(path: dbPath)
+                do {
+                    try ingestVSCodeChat(into: cache, reader: remoteReader, remoteName: remote.name)
+                } catch {
+                    let msg = "chat: \(PathScrubber.scrub("\(error)"))"
+                    hostErrors.append(msg)
+                    phaseErrors.append("\(remote.name) \(msg)")
                 }
             }
 
@@ -403,7 +424,17 @@ enum RefreshWorker {
                 )
                 try cache.insertRecord(rec, kind: .shutdown)
 
-            case .sessionInfo, .sessionEnded, .fileOffset:
+            case .workspaceChatTurn(let sid, let ts, let messageId):
+                let rec = UsageRecord(
+                    timestamp: ts, sessionId: sid, messageId: messageId,
+                    source: .vscodeChat, model: "GitHub Copilot Chat",
+                    outputTokens: 0,
+                    inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+                    requestCount: 1, premiumCost: nil, remoteName: remoteName
+                )
+                try cache.insertRecord(rec, kind: .message)
+
+            case .sessionInfo, .sessionEnded, .fileOffset, .transcriptOffset:
                 break
             }
         }
@@ -495,9 +526,38 @@ enum RefreshWorker {
     private static func ingestVSCodeChat(into cache: CacheStore, reader: VSCodeChatReader, remoteName: String?) throws {
         guard reader.hasExpectedSchema() else { return }
         try cache.clearChatRecords(remoteName: remoteName)
+
         let interactions = reader.chatInteractions(remoteName: remoteName)
+
+        // De-dup against per-workspace transcript records (kind=msg,
+        // source=vscodeChat) so we don't double-count sessions that appear in
+        // BOTH the central DB and the workspace transcripts.
+        //
+        // Per-session rule: final count per session = max(tx, db).
+        // Implementation: insert only `max(0, db - tx)` central-DB rows per
+        // session. The DB rows have message_id = NULL and SQLite treats NULLs
+        // as distinct for UNIQUE, so multiple count-only rows per session are
+        // allowed. We keep the most-recent DB rows for stable timestamps.
+        let txCounts = (try? cache.chatTranscriptSessionCounts(remoteName: remoteName)) ?? [:]
+
+        // Bucket DB rows by session, sorted by timestamp descending so we can
+        // drop the oldest rows when dedup'ing.
+        var bySession: [String: [UsageRecord]] = [:]
         for r in interactions {
-            try cache.insertRecord(r, kind: .chat)
+            bySession[r.sessionId, default: []].append(r)
+        }
+
+        for (sid, rows) in bySession {
+            let dbCount = rows.count
+            let txCount = txCounts[sid] ?? 0
+            let toKeep = max(0, dbCount - txCount)
+            if toKeep == 0 { continue }
+            // Keep the most recent `toKeep` rows so the timestamp distribution
+            // stays meaningful for the daily/weekly views.
+            let sorted = rows.sorted { $0.timestamp > $1.timestamp }
+            for r in sorted.prefix(toKeep) {
+                try cache.insertRecord(r, kind: .chat)
+            }
         }
     }
 }
