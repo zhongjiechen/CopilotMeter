@@ -12,6 +12,8 @@ public struct UsageAggregator: Sendable {
         public var byWindow: [TimeWindow: UsageStats]
         public var byWindowByModel: [TimeWindow: [String: UsageStats]]
         public var byWindowBySource: [TimeWindow: [UsageRecord.Source: UsageStats]]
+        /// `nil` key = local, non-nil = remote host nickname.
+        public var byWindowByRemote: [TimeWindow: [String?: UsageStats]]
         public var blindChatByWindow: [TimeWindow: Int]
         public var dailyRequests: [DailyPoint]
 
@@ -20,6 +22,7 @@ public struct UsageAggregator: Sendable {
             byWindow: [:],
             byWindowByModel: [:],
             byWindowBySource: [:],
+            byWindowByRemote: [:],
             blindChatByWindow: [:],
             dailyRequests: []
         )
@@ -31,6 +34,7 @@ public struct UsageAggregator: Sendable {
         var byWindow: [TimeWindow: UsageStats] = [:]
         var byWindowByModel: [TimeWindow: [String: UsageStats]] = [:]
         var byWindowBySource: [TimeWindow: [UsageRecord.Source: UsageStats]] = [:]
+        var byWindowByRemote: [TimeWindow: [String?: UsageStats]] = [:]
         var blindChat: [TimeWindow: Int] = [:]
         var dailyTotals: [Date: Double] = [:]
 
@@ -38,6 +42,7 @@ public struct UsageAggregator: Sendable {
             byWindow[w] = UsageStats.zero
             byWindowByModel[w] = [:]
             byWindowBySource[w] = [:]
+            byWindowByRemote[w] = [:]
             blindChat[w] = 0
         }
 
@@ -45,10 +50,15 @@ public struct UsageAggregator: Sendable {
             let dayStart = calendar.startOfDay(for: r.timestamp)
             dailyTotals[dayStart, default: 0] += r.requestCount
 
+            // For per-model breakdown, prefix remote-hosted records with @host
+            // so users can see at a glance which usage came from where.
+            let modelKey = r.remoteName.map { "\(r.model) @\($0)" } ?? r.model
+
             for w in TimeWindow.allCases where w.contains(r.timestamp, now: now) {
                 byWindow[w]!.add(r)
-                byWindowByModel[w]![r.model, default: .zero].add(r)
+                byWindowByModel[w]![modelKey, default: .zero].add(r)
                 byWindowBySource[w]![r.source, default: .zero].add(r)
+                byWindowByRemote[w]![r.remoteName, default: .zero].add(r)
                 if r.source == .vscodeChat {
                     blindChat[w]! += Int(r.requestCount)
                 }
@@ -68,6 +78,7 @@ public struct UsageAggregator: Sendable {
             byWindow: byWindow,
             byWindowByModel: byWindowByModel,
             byWindowBySource: byWindowBySource,
+            byWindowByRemote: byWindowByRemote,
             blindChatByWindow: blindChat,
             dailyRequests: sparkline
         )
