@@ -72,6 +72,11 @@ public enum RemoteSSHExtractor {
         /// `sessionId` is the chat session UUID (filename of the .jsonl);
         /// `messageId` is the event's own UUID and is used for dedup.
         case workspaceChatTurn(sid: String, ts: Date, messageId: String)
+        /// Stamps a transcript session as VS Code **Agent mode** (the
+        /// extractor saw at least one `tool.execution_start` event for it).
+        /// The ingest layer uses this to reclassify `workspaceChatTurn`
+        /// rows for the same session from `.vscodeChat` to `.vscodeAgent`.
+        case workspaceAgentMarker(sid: String)
         /// Resume marker for a CLI/Agent events.jsonl file (keyed by session id).
         case fileOffset(sid: String, byteOffset: Int64)
         /// Resume marker for a VS Code Chat transcript file (composite key
@@ -285,6 +290,8 @@ public enum RemoteSSHExtractor {
                     ts: parseTimestamp(obj["ts"] as? String),
                     messageId: mid
                 ))
+            case "wagent":
+                out.append(.workspaceAgentMarker(sid: sid))
             default:
                 break
             }

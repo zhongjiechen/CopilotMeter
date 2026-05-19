@@ -232,6 +232,25 @@ enum RefreshWorker {
                           remoteStatuses: [])
         }
 
+        // v0.1.6 migration: the CacheStore initializer wipes legacy
+        // transcript records (so the next refresh re-classifies them as
+        // Chat vs Agent). We also need to wipe the per-host `offsets.json`
+        // so the remote extractor re-emits user.message events. The key is
+        // versioned alongside the CacheStore migration so a bug-fix bump
+        // re-triggers both halves of the migration in lockstep.
+        let migrationKey = "v016_split_transcript_agent_remote_offsets_v2"
+        if !cache.migrationDone(migrationKey) {
+            let remotesRoot = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support/CopilotMeter/remotes")
+            if let contents = try? FileManager.default.contentsOfDirectory(at: remotesRoot, includingPropertiesForKeys: nil) {
+                for dir in contents {
+                    let offsetsPath = dir.appendingPathComponent("offsets.json")
+                    try? FileManager.default.removeItem(at: offsetsPath)
+                }
+            }
+            cache.markMigrationDone(migrationKey)
+        }
+
         let parser = EventsJSONLParser()
         let localChatReader = VSCodeChatReader()
         let localTranscriptsReader = VSCodeChatTranscriptsReader(cache: cache)
@@ -384,13 +403,20 @@ enum RefreshWorker {
         remoteName: String,
         remoteVsCodeIds: Set<String>
     ) throws {
-        // First pass: collect per-session metadata (selectedModel, hostType).
+        // First pass: collect per-session metadata (selectedModel, hostType)
+        // and which transcript sessions exhibited tool calls (= Agent mode).
         var sessionModel: [String: String] = [:]
         var sessionHostType: [String: String] = [:]
+        var agentTranscriptSessions: Set<String> = []
         for e in events {
-            if case .sessionInfo(let sid, _, let sm, let ht) = e {
+            switch e {
+            case .sessionInfo(let sid, _, let sm, let ht):
                 if let sm { sessionModel[sid] = sm }
                 if let ht { sessionHostType[sid] = ht }
+            case .workspaceAgentMarker(let sid):
+                agentTranscriptSessions.insert(sid)
+            default:
+                break
             }
         }
 
@@ -425,18 +451,32 @@ enum RefreshWorker {
                 try cache.insertRecord(rec, kind: .shutdown)
 
             case .workspaceChatTurn(let sid, let ts, let messageId):
+                // Default to .vscodeChat; reclassification below promotes
+                // sessions with tool calls to .vscodeAgent.
+                let source: UsageRecord.Source = agentTranscriptSessions.contains(sid)
+                    ? .vscodeAgent : .vscodeChat
                 let rec = UsageRecord(
                     timestamp: ts, sessionId: sid, messageId: messageId,
-                    source: .vscodeChat, model: "GitHub Copilot Chat",
+                    source: source, model: "GitHub Copilot Chat",
                     outputTokens: 0,
                     inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
                     requestCount: 1, premiumCost: nil, remoteName: remoteName
                 )
                 try cache.insertRecord(rec, kind: .message)
 
-            case .sessionInfo, .sessionEnded, .fileOffset, .transcriptOffset:
+            case .sessionInfo, .sessionEnded, .fileOffset, .transcriptOffset, .workspaceAgentMarker:
                 break
             }
+        }
+
+        // Retroactively reclassify rows from PREVIOUS runs that we ingested
+        // as .vscodeChat before we knew the session had tool calls. New rows
+        // already used the correct source above.
+        if !agentTranscriptSessions.isEmpty {
+            try cache.reclassifyTranscriptChatAsAgent(
+                sessionIds: agentTranscriptSessions,
+                remoteName: remoteName
+            )
         }
     }
 
