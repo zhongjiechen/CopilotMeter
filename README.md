@@ -1,18 +1,26 @@
 # CopilotMeter
 
-> **Built for GitHub Copilot Enterprise users.** Your seat says *Unlimited*, the official dashboard reports 0 % usage forever — and you have no idea how much you're actually spending in tokens, requests, or USD equivalents. CopilotMeter parses Copilot's local data files directly and gives you a real per-day / per-week / per-month breakdown the GitHub UI won't.
-
-A tiny native macOS menu-bar app that tracks **how much you're actually using GitHub Copilot** — independent of whatever the in-product indicator shows.
+A tiny native macOS menu-bar app that tracks **how much you're actually using GitHub Copilot** — today / 7-day / 30-day breakdown, cache-hit rate, per-model split, and a USD cost estimate, all from a glance.
 
 <p align="center">
   <img src="docs/overview.png" alt="CopilotMeter popover" width="420">
 </p>
 
-Today / 7-day / 30-day breakdown, cache-hit rate, per-model split, estimated USD cost (both GitHub-billable premium-request units and equivalent retail Anthropic/OpenAI token cost). Swift + SwiftUI, Apple Silicon native, runs 100 % locally.
+Works for any Copilot plan, but **especially valuable for GitHub Copilot Enterprise users**: your seat is "Unlimited", the official dashboard at <https://github.com/settings/billing/usage> reports 0 % forever, and there is no API for per-turn token data. CopilotMeter parses the same local files Copilot writes anyway and gives you a real number.
 
-## Why does this exist?
+Pro / Pro+ / Business users still get a nicer, always-visible breakdown than the web dashboard — without leaving the menu bar.
 
-GitHub Copilot **Pro / Pro+ / Business** users see their usage at <https://github.com/settings/billing/usage>. **Enterprise** users do not — the page caps out at "0 % of unlimited", and there is no API to retrieve per-turn token data. CopilotMeter fills that gap by reading the same `events.jsonl` + Chat-transcript files Copilot writes locally and aggregating them itself. It works for any plan, but Enterprise users are the ones who *need* it.
+## Privacy &amp; safety
+
+- **No login.** Doesn't ask for your GitHub credentials, OAuth token, or any API key. There's literally no auth flow.
+- **No network calls** except SSH to hosts *you* tick in the popover (for tracking your own remote dev boxes).
+- **No telemetry, no crash reporters, no third-party SDKs.** Single Swift binary, sandbox-friendly.
+- **Reads only locally-written Copilot session-state.** Specifically:
+  - `~/.copilot/session-state/<sid>/events.jsonl` — for CLI / Agent token rollups
+  - `~/Library/Application Support/Code/User/{globalStorage,workspaceStorage}/.../github.copilot-chat/...` — for Chat request counts (prompt text is **never** loaded into the app's memory — see `VSCodeChatTranscriptsReader.swift` / `VSCodeChatReader.swift`)
+- **Nothing is uploaded.** All aggregation happens on your Mac and is stored at `~/Library/Application Support/CopilotMeter/cache.db`. Uninstall by deleting that directory + `/Applications/CopilotMeter.app`; no leftovers elsewhere.
+
+Open source under MIT, so feel free to audit the ~1.2 MB of Swift before installing.
 
 ## Lightweight by design
 
@@ -26,7 +34,7 @@ GitHub Copilot **Pro / Pro+ / Business** users see their usage at <https://githu
 | Local refresh tick | every 60 s (parses only the new tail of each `events.jsonl` / transcript) |
 | Remote refresh tick | every 1 h (incremental; typically < 1 KB of SSH traffic per host after the first sync) |
 
-No background daemons, no helper tools, no telemetry. The whole app is one Swift binary linked against system frameworks (no Electron, no embedded Node/Python runtime — the small Python extractor we ship is only ever piped over SSH to remote hosts, never spawned locally).
+No background daemons, no helper tools. The whole app is one Swift binary linked against system frameworks (no Electron, no embedded Node/Python runtime — the small Python extractor we ship is only ever piped over SSH to remote hosts, never spawned locally).
 
 ## 📣 News
 
