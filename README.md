@@ -40,6 +40,7 @@ No background daemons, no helper tools. The whole app is one Swift binary linked
 
 ## 📣 News
 
+- **v0.1.10** — Added an **ⓘ button** next to "Estimated cost" in the popover. Click it for a full explanation of how each column is computed (GitHub-bill formula vs retail-token formula, per-model rates, why VS Code Chat is $0). ([#16](https://github.com/zhongjiechen/CopilotMeter/pull/16))
 - **v0.1.9** — Renamed the **"Coding Agent"** source label to **"Cloud Agent"** to better reflect what it is (the GitHub-side, cloud-dispatched agent triggered by PR `@copilot` mentions / "Delegate to coding agent"). Internal raw value is unchanged so existing `cache.db` rows continue to decode. ([#15](https://github.com/zhongjiechen/CopilotMeter/pull/15))
 - **v0.1.8** — Update check now runs **weekly** (was 6-hourly — overkill for an app that ships once a week at most). Current version (`v0.1.x`) now shown next to the popover title so you always know what you're running. ([#14](https://github.com/zhongjiechen/CopilotMeter/pull/14))
 - **v0.1.7** — **In-app update notifications.** CopilotMeter now polls GitHub Releases at most once every 6 h and shows an orange banner in the popover (plus a dot on the menu-bar icon) when a newer version is available. Click "Open" to view the release notes & DMG. Opt out anytime with `defaults write dev.local.CopilotMeter disableUpdateChecks 1`. ([#13](https://github.com/zhongjiechen/CopilotMeter/pull/13))
