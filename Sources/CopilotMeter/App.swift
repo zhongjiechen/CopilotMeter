@@ -4,6 +4,7 @@ import AppKit
 @main
 struct CopilotMeterApp: App {
     @StateObject private var refresher = UsageRefresher()
+    @StateObject private var updates = UpdateChecker()
 
     init() {
         // Open a regular window for screenshot / debug if --preview was passed.
@@ -51,12 +52,13 @@ struct CopilotMeterApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            PopoverView(refresher: refresher)
+            PopoverView(refresher: refresher, updates: updates)
         } label: {
-            MenuBarLabel(refresher: refresher)
+            MenuBarLabel(refresher: refresher, updates: updates)
                 .task {
                     refresher.startAutoRefresh(every: 60)
-                    PreviewWindowController.shared.attach(refresher: refresher)
+                    updates.start(initialDelay: 15)
+                    PreviewWindowController.shared.attach(refresher: refresher, updates: updates)
                 }
         }
         .menuBarExtraStyle(.window)
@@ -65,6 +67,7 @@ struct CopilotMeterApp: App {
 
 private struct MenuBarLabel: View {
     @ObservedObject var refresher: UsageRefresher
+    @ObservedObject var updates: UpdateChecker
 
     var body: some View {
         let today = refresher.snapshot.byWindow[.today] ?? .zero
@@ -81,7 +84,15 @@ private struct MenuBarLabel: View {
             .sorted { $0.1 > $1.1 }
 
         HStack(spacing: 4) {
-            Image(systemName: total > 0 ? "chart.bar.fill" : "chart.bar")
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: total > 0 ? "chart.bar.fill" : "chart.bar")
+                if updates.hasUpdate {
+                    Circle()
+                        .fill(Color.orange)
+                        .frame(width: 6, height: 6)
+                        .offset(x: 2, y: -1)
+                }
+            }
             // If user has remotes enabled, show local + remote chips + total.
             // Otherwise just the total to keep the menu bar tidy.
             if remoteEntries.isEmpty {
@@ -165,9 +176,9 @@ final class PreviewWindowController {
         }
     }
 
-    func attach(refresher: UsageRefresher) {
+    func attach(refresher: UsageRefresher, updates: UpdateChecker) {
         guard let window else { return }
-        let hosting = NSHostingView(rootView: PopoverView(refresher: refresher))
+        let hosting = NSHostingView(rootView: PopoverView(refresher: refresher, updates: updates))
         hosting.frame = NSRect(x: 0, y: 0, width: 540, height: 820)
         window.contentView = hosting
         window.setContentSize(NSSize(width: 540, height: 820))

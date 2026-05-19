@@ -13,7 +13,9 @@ Pro / Pro+ / Business users still get a nicer, always-visible breakdown than the
 ## Privacy &amp; safety
 
 - **No login.** Doesn't ask for your GitHub credentials, OAuth token, or any API key. There's literally no auth flow.
-- **No network calls** except SSH to hosts *you* tick in the popover (for tracking your own remote dev boxes).
+- **Only two network endpoints, both passive:**
+  - SSH to hosts *you* tick in the popover (for tracking your own remote dev boxes — disabled by default).
+  - `api.github.com` once every 6 h to check `releases/latest` for a new version (no auth, no payload, no identifying headers; disable with `defaults write dev.local.CopilotMeter disableUpdateChecks 1`).
 - **No telemetry, no crash reporters, no third-party SDKs.** Single Swift binary, sandbox-friendly.
 - **Reads only locally-written Copilot session-state.** Specifically:
   - `~/.copilot/session-state/<sid>/events.jsonl` — for CLI / Agent token rollups
