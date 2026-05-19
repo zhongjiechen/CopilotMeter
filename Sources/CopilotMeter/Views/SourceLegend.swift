@@ -16,7 +16,7 @@ extension UsageRecord.Source {
         case .copilotCLI: return "CLI"
         case .vscodeAgent: return "VS Code Agent"
         case .vscodeChat: return "VS Code Chat"
-        case .codingAgent: return "Coding Agent"
+        case .codingAgent: return "Cloud Agent"
         case .unknown: return "Unknown"
         }
     }

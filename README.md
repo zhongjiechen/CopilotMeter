@@ -40,11 +40,12 @@ No background daemons, no helper tools. The whole app is one Swift binary linked
 
 ## 📣 News
 
+- **v0.1.9** — Renamed the **"Coding Agent"** source label to **"Cloud Agent"** to better reflect what it is (the GitHub-side, cloud-dispatched agent triggered by PR `@copilot` mentions / "Delegate to coding agent"). Internal raw value is unchanged so existing `cache.db` rows continue to decode. ([#15](https://github.com/zhongjiechen/CopilotMeter/pull/15))
 - **v0.1.8** — Update check now runs **weekly** (was 6-hourly — overkill for an app that ships once a week at most). Current version (`v0.1.x`) now shown next to the popover title so you always know what you're running. ([#14](https://github.com/zhongjiechen/CopilotMeter/pull/14))
 - **v0.1.7** — **In-app update notifications.** CopilotMeter now polls GitHub Releases at most once every 6 h and shows an orange banner in the popover (plus a dot on the menu-bar icon) when a newer version is available. Click "Open" to view the release notes & DMG. Opt out anytime with `defaults write dev.local.CopilotMeter disableUpdateChecks 1`. ([#13](https://github.com/zhongjiechen/CopilotMeter/pull/13))
 - **v0.1.6** — Distinguish VS Code Chat **Agent mode** from **Ask/Edit mode** in workspace transcripts. Sessions with `tool.execution_start` events (i.e. agentic tool use like `run_in_terminal`, `replace_string_in_file`) are now classified as `vscodeAgent` instead of `vscodeChat`. Includes a one-shot migration that retroactively reclassifies records ingested by v0.1.5. ([#12](https://github.com/zhongjiechen/CopilotMeter/pull/12))
 - **v0.1.5** — **Big undercount fix for VS Code Copilot Chat users.** We now also scan per-workspace transcripts (`workspaceStorage/<wkHash>/GitHub.copilot-chat/transcripts/*.jsonl`) on both local and remote, since modern Copilot Chat (≥0.47) no longer fully mirrors them into the central session-store DB. One of my remotes went from showing 12 monthly requests to 249 after this fix. Works for both local Mac and SSH'd-into hosts. ([#11](https://github.com/zhongjiechen/CopilotMeter/pull/11))
-- **v0.1.4** — Distinguish GitHub Coding Agent sessions from terminal CLI. ([#9](https://github.com/zhongjiechen/CopilotMeter/pull/9))
+- **v0.1.4** — Distinguish GitHub Cloud Agent (formerly "Coding Agent") sessions from terminal CLI. ([#9](https://github.com/zhongjiechen/CopilotMeter/pull/9))
 - **v0.1.3** — **Now tracks remote machines too.** Check a host from your `~/.ssh/config` and CopilotMeter pulls its Copilot usage over SSH — typically < 3 MB per sync. ([#7](https://github.com/zhongjiechen/CopilotMeter/pull/7), [#8](https://github.com/zhongjiechen/CopilotMeter/pull/8))
 - **v0.1.2** — Resilience fix for users whose VS Code Copilot Chat extension is installed but never opened. ([#6](https://github.com/zhongjiechen/CopilotMeter/pull/6))
 - **v0.1.1** — Per-window USD cost estimates (GitHub overage + retail token equivalent). ([#1](https://github.com/zhongjiechen/CopilotMeter/pull/1))
@@ -84,7 +85,7 @@ No user prompts or assistant responses ever leave the remote. Auto-refreshes hou
 | VS Code Agent (local) | same path — invoked by VS Code Chat in Agent mode | ✅ full |
 | VS Code Agent (remote vscode-server) | `workspaceStorage/<wkHash>/GitHub.copilot-chat/transcripts/<sid>.jsonl` | ❌ count-only [^1] |
 | VS Code Ask / Edit Chat | central `globalStorage/.../session-store.db` + transcripts | ❌ count-only [^1] |
-| Coding Agent (cloud-dispatched) | events.jsonl with `hostType=github` | ✅ full |
+| Cloud Agent (cloud-dispatched) | events.jsonl with `hostType=github` | ✅ full |
 | Remote hosts | extracted over SSH from each remote's own data dirs | same per-source as above |
 | Cache | `~/Library/Application Support/CopilotMeter/cache.db` | — |
 

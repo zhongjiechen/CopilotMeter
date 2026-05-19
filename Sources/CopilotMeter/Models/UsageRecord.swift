@@ -6,7 +6,11 @@ public struct UsageRecord: Hashable, Codable, Sendable {
         case copilotCLI      // Terminal CLI sessions
         case vscodeAgent     // VS Code Copilot agent / copilotcli mode (writes events.jsonl)
         case vscodeChat      // VS Code "Ask" chat mode (no token data, count-only)
-        case codingAgent     // GitHub Copilot Coding Agent (cloud-dispatched, hostType=github)
+        case codingAgent     // GitHub Copilot **Cloud Agent** — cloud-dispatched sessions
+                             // fired off from PR `@copilot` mentions or VS Code's
+                             // "Delegate to coding agent". The rawValue stays as
+                             // "codingAgent" so existing cache.db rows still decode;
+                             // the user-facing label is "Cloud Agent".
         case unknown
 
         public var displayName: String {
@@ -14,7 +18,7 @@ public struct UsageRecord: Hashable, Codable, Sendable {
             case .copilotCLI: return "Copilot CLI"
             case .vscodeAgent: return "VS Code Agent"
             case .vscodeChat: return "VS Code Chat"
-            case .codingAgent: return "Coding Agent"
+            case .codingAgent: return "Cloud Agent"
             case .unknown: return "Unknown"
             }
         }
