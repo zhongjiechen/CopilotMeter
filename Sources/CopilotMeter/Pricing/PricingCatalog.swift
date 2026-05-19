@@ -1,10 +1,7 @@
 import Foundation
 
-/// Retail USD pricing per million tokens for a single model.
-///
-/// All four rates are independent so we can model Anthropic-style cache
-/// pricing (read = 10% of input, write = 125% of input) and OpenAI-style
-/// (no cache discount, or different ratios).
+/// Per-million-token rates for a single model, in GitHub AI Credits (1 credit
+/// = $0.01 USD, so the values double as retail-USD-equivalent numbers).
 public struct ModelPrice: Sendable, Equatable {
     public let inputPerMillion: Double
     public let outputPerMillion: Double
@@ -14,8 +11,10 @@ public struct ModelPrice: Sendable, Equatable {
     public init(input: Double, output: Double, cacheRead: Double? = nil, cacheWrite: Double? = nil) {
         self.inputPerMillion = input
         self.outputPerMillion = output
-        // Sensible defaults if a provider doesn't publish cache rates: read is
-        // 10% of input (Anthropic convention), write is 125% of input.
+        // Anthropic publishes cache-read at 10% of input and cache-write at
+        // 125% of input. OpenAI's cache-read is 10% across the board.
+        // Google publishes cache-read at 10%. When a model's rate isn't
+        // explicitly known we fall back to those defaults.
         self.cacheReadPerMillion = cacheRead ?? input * 0.10
         self.cacheWritePerMillion = cacheWrite ?? input * 1.25
     }
@@ -31,9 +30,6 @@ public struct ModelPrice: Sendable, Equatable {
     ///     fresh = max(0, input - cacheRead - cacheWrite)
     ///     total = fresh×inputRate + cacheRead×cacheReadRate
     ///           + cacheWrite×cacheWriteRate + output×outputRate
-    ///
-    /// This matches Anthropic / OpenAI billing semantics where cache hits are
-    /// billed at a steep discount and cache writes carry a small surcharge.
     public func cost(input: Int, output: Int, cacheRead: Int, cacheWrite: Int) -> Double {
         let freshInput = max(0, input - cacheRead - cacheWrite)
         let i = Double(freshInput) * inputPerMillion       / 1_000_000.0
@@ -44,54 +40,107 @@ public struct ModelPrice: Sendable, Equatable {
     }
 }
 
-/// A best-effort lookup table mapping GitHub Copilot's internal model names
-/// (e.g. "claude-opus-4.7-1m-internal", "gpt-5.5") to the closest equivalent
-/// **public retail** rate from the underlying provider, plus a single rate for
-/// GitHub's own "premium request" overage billing.
+/// Maps each model name Copilot logs (`claude-opus-4.7-1m-internal`, `gpt-5.5`,
+/// `claude-sonnet-4.6`, …) to its **official GitHub AI Credit** rate from
+/// <https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing>.
 ///
-/// These constants ARE approximate. They should be updated when official
-/// pricing changes. The values reflect publicly-documented rates as of 2025
-/// for Anthropic Claude and OpenAI GPT models; for variants without a
-/// published rate (e.g. "-internal" preview models) we use the closest family
-/// member.
+/// **Billing landscape after 2026-06-01**: Copilot moved from a flat
+/// "premium request" subscription model to **usage-based billing in GitHub
+/// AI Credits**. 1 AI credit = $0.01 USD, so the per-million-token prices
+/// below are simultaneously:
+///   - exact GitHub bill numbers (for users on usage-based billing)
+///   - retail-USD equivalents (since 1 credit = $0.01)
 ///
-/// Sources you'll want to keep an eye on:
-///   - https://www.anthropic.com/pricing
-///   - https://openai.com/api/pricing
-///   - https://docs.github.com/copilot/managing-copilot/monitoring-usage-and-entitlements/about-premium-requests
+/// Code completions and Next Edit suggestions remain **free** and are not
+/// billed in AI credits.
+///
+/// Legacy Pro / Pro+ annual subscribers who opted to remain on
+/// request-based billing still pay `$0.04 per premium-request unit`; that
+/// constant is kept for backward compatibility.
+///
+/// Pricing constants reflect the published table as of 2026-05. Keep this
+/// file in sync with the GitHub docs link above when rates change.
 public enum PricingCatalog {
 
-    /// GitHub Copilot's per-premium-request overage rate (USD) — applied to
-    /// the `requests.cost` field recorded in each session's modelMetrics.
-    /// As of 2025, GitHub bills overage premium requests at $0.04 each across
-    /// the Pro, Pro+, Business, and Enterprise plans.
+    /// 2026 GitHub Copilot moved to AI-Credit-based usage billing on this date.
+    public static let billingTransitionDate: Date = {
+        var c = DateComponents()
+        c.year = 2026; c.month = 6; c.day = 1
+        c.timeZone = TimeZone(identifier: "UTC")
+        return Calendar(identifier: .gregorian).date(from: c) ?? Date()
+    }()
+
+    /// Legacy: USD per "premium request unit" for annual-plan subscribers who
+    /// stayed on request-based billing. Was the GitHub overage rate across
+    /// Pro / Pro+ / Business / Enterprise.
     public static let usdPerPremiumRequest: Double = 0.04
 
-    /// Anthropic — Claude 4.x family ($/M tokens).
-    private static let claudeOpus4   = ModelPrice(input: 15.00, output: 75.00)
-    private static let claudeSonnet4 = ModelPrice(input:  3.00, output: 15.00)
-    private static let claudeHaiku4  = ModelPrice(input:  1.00, output:  5.00)
+    // MARK: - OpenAI
 
-    /// OpenAI — GPT-5 / 4.1 family (best public estimates).
-    private static let gpt5      = ModelPrice(input: 1.25, output: 10.00)
-    private static let gpt5Codex = ModelPrice(input: 1.25, output: 10.00)
-    private static let gpt5Mini  = ModelPrice(input: 0.25, output:  2.00)
-    private static let gpt41     = ModelPrice(input: 2.00, output:  8.00)
+    private static let gpt41        = ModelPrice(input: 2.00,  output: 8.00,   cacheRead: 0.50)
+    private static let gpt5Mini     = ModelPrice(input: 0.25,  output: 2.00,   cacheRead: 0.025)
+    private static let gpt5_2       = ModelPrice(input: 1.75,  output: 14.00,  cacheRead: 0.175)
+    private static let gpt5_2Codex  = ModelPrice(input: 1.75,  output: 14.00,  cacheRead: 0.175)
+    private static let gpt5_3Codex  = ModelPrice(input: 1.75,  output: 14.00,  cacheRead: 0.175)
+    private static let gpt5_4       = ModelPrice(input: 2.50,  output: 15.00,  cacheRead: 0.25)
+    private static let gpt5_4Mini   = ModelPrice(input: 0.75,  output: 4.50,   cacheRead: 0.075)
+    private static let gpt5_4Nano   = ModelPrice(input: 0.20,  output: 1.25,   cacheRead: 0.02)
+    private static let gpt5_5       = ModelPrice(input: 5.00,  output: 30.00,  cacheRead: 0.50)
 
-    /// Returns the retail rate for a model name, or nil if unknown.
+    // MARK: - Anthropic
+    // Cache-write is explicit per the docs.
+
+    private static let claudeHaiku4_5  = ModelPrice(input: 1.00, output: 5.00,  cacheRead: 0.10, cacheWrite: 1.25)
+    private static let claudeSonnet4   = ModelPrice(input: 3.00, output: 15.00, cacheRead: 0.30, cacheWrite: 3.75)
+    private static let claudeOpus      = ModelPrice(input: 5.00, output: 25.00, cacheRead: 0.50, cacheWrite: 6.25)
+
+    // MARK: - Google
+
+    private static let gemini25Pro     = ModelPrice(input: 1.25, output: 10.00, cacheRead: 0.125)
+    private static let gemini3Flash    = ModelPrice(input: 0.50, output: 3.00,  cacheRead: 0.05)
+    private static let gemini31Pro     = ModelPrice(input: 2.00, output: 12.00, cacheRead: 0.20)
+
+    // MARK: - Fine-tuned (GitHub)
+
+    private static let raptorMini      = ModelPrice(input: 0.25, output: 2.00,  cacheRead: 0.025) // = GPT-5 mini pricing
+    private static let goldeneye       = ModelPrice(input: 1.25, output: 10.00, cacheRead: 0.125) // = GPT-5.1-Codex pricing
+
+    /// Returns the rate for a model name, or nil if unknown.
     public static func price(for model: String) -> ModelPrice? {
         let m = canonical(model)
-        if m.contains("haiku") { return claudeHaiku4 }
+
+        // --- Anthropic ---
+        if m.contains("haiku") { return claudeHaiku4_5 }
+        if m.contains("opus")  { return claudeOpus }
         if m.contains("sonnet") { return claudeSonnet4 }
-        if m.contains("opus") { return claudeOpus4 }
-        if m.contains("mini") { return gpt5Mini }
-        if m.contains("codex") { return gpt5Codex }
-        if m.hasPrefix("gpt-5") { return gpt5 }
-        if m.hasPrefix("gpt-4") { return gpt41 }
+
+        // --- Google ---
+        if m.contains("gemini-3-flash") || m.contains("gemini3-flash") || m.contains("gemini-3.flash") { return gemini3Flash }
+        if m.contains("gemini-3.1") || m.contains("gemini-3-1") { return gemini31Pro }
+        if m.contains("gemini") { return gemini25Pro }
+
+        // --- GitHub fine-tuned ---
+        if m.contains("raptor") { return raptorMini }
+        if m.contains("goldeneye") { return goldeneye }
+
+        // --- OpenAI (most specific first) ---
+        if m.hasPrefix("gpt-5.5") || m.hasPrefix("gpt-55") { return gpt5_5 }
+        if m.hasPrefix("gpt-5.4-mini") { return gpt5_4Mini }
+        if m.hasPrefix("gpt-5.4-nano") { return gpt5_4Nano }
+        if m.hasPrefix("gpt-5.4") { return gpt5_4 }
+        if m.hasPrefix("gpt-5.3-codex") { return gpt5_3Codex }
+        if m.hasPrefix("gpt-5.3") { return gpt5_3Codex }
+        if m.hasPrefix("gpt-5.2-codex") { return gpt5_2Codex }
+        if m.hasPrefix("gpt-5.2") { return gpt5_2 }
+        if m.hasPrefix("gpt-5-codex") || (m.contains("gpt-5") && m.contains("codex")) { return goldeneye }
+        if m.hasPrefix("gpt-5-mini") || (m.contains("gpt-5") && m.contains("mini")) { return gpt5Mini }
+        if m.hasPrefix("gpt-5") { return gpt5_2 }   // unspecified GPT-5 → 5.2 baseline
+        if m.hasPrefix("gpt-4")  { return gpt41 }
+
         return nil
     }
 
-    /// Estimated retail USD for a single record, using its model's rates.
+    /// Estimated USD cost for a single record at its model's GitHub AI Credit rates.
     /// Returns 0 for records where we have no token data (e.g. chat-mode rows).
     public static func estimatedCost(for record: UsageRecord) -> Double {
         guard let p = price(for: record.model) else { return 0 }
@@ -104,7 +153,8 @@ public enum PricingCatalog {
     }
 
     /// What GitHub itself would bill, in USD, for the given accumulated
-    /// premium-request units.
+    /// premium-request units. Legacy: only applies to annual-plan
+    /// subscribers who stayed on request-based billing after 2026-06-01.
     public static func githubOverageUsd(premiumCost: Double) -> Double {
         premiumCost * usdPerPremiumRequest
     }
