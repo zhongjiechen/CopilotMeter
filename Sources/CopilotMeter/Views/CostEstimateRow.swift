@@ -41,18 +41,20 @@ struct CostEstimateRow: View {
                         label: "GitHub bill",
                         value: gh,
                         help: """
-                            What GitHub would bill at $\(String(format: "%.2f", PricingCatalog.usdPerPremiumRequest)) per premium-request unit. \
-                            Computed from the recorded 'requests.cost' field. For enterprise plans where the cost is recorded as 0, this row reads $0.00.
+                            Legacy request-based billing — only applies to Pro/Pro+ annual \
+                            subscribers who stayed on it after 2026-06-01. Computed from \
+                            the recorded `requests.cost` × $\(String(format: "%.2f", PricingCatalog.usdPerPremiumRequest)) per premium-request unit. \
+                            For Enterprise / usage-based-billing users it reads $0.00 — see the AI Credits column instead.
                             """
                     )
                     costCell(
-                        label: "Retail tokens",
+                        label: "AI Credits",
                         value: retail,
                         help: """
-                            Best-effort retail cost if you paid the underlying provider directly per token. \
-                            Uses public 2025 rates: Claude Opus $15/$75 per M in/out, Sonnet $3/$15, Haiku $1/$5, \
-                            GPT-5 $1.25/$10, GPT-5 mini $0.25/$2. Cache reads at 10% of input. \
-                            Pricing constants live in Sources/CopilotMeter/Pricing/PricingCatalog.swift.
+                            GitHub's official 2026 usage-based bill. Each model's input / output / cache_read \
+                            tokens are charged at the per-million rate published at \
+                            docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing. \
+                            1 AI Credit = $0.01 USD, so the USD figure shown here is exactly the AI-Credits cost.
                             """
                     )
                 }
@@ -101,16 +103,21 @@ private struct CostFormulaPopover: View {
             VStack(alignment: .leading, spacing: 10) {
                 header
 
+                Text("**Starting 2026-06-01** GitHub moved Copilot from flat \"premium request\" billing to **usage-based billing in GitHub AI Credits**. 1 AI Credit = $0.01 USD. Code completions and Next Edit suggestions remain **free**.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 2)
+
                 section(
-                    title: "GitHub bill",
+                    title: "GitHub bill  (legacy / annual request-based)",
                     icon: "creditcard.fill",
                     accent: .green
                 ) {
                     formula("Σ premium_cost × $0.04")
-                    Text("`premium_cost` is the per-request unit count GitHub itself records in each session's `modelMetrics.<model>.requests.cost`. `$0.04` is the 2025 Pro/Pro+/Business/Enterprise overage rate. Constant: `PricingCatalog.usdPerPremiumRequest`.")
+                    Text("Pro / Pro+ **annual** subscribers can stay on request-based billing. `premium_cost` is GitHub's per-request unit count recorded in each session's `modelMetrics.<model>.requests.cost`; `$0.04` is the per-unit overage rate. Constant: `PricingCatalog.usdPerPremiumRequest`.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                    Text("Enterprise users still get a non-zero number here even though GitHub bills them $0 — it's what the same usage *would* cost on a metered plan.")
+                    Text("Reads $0.00 for monthly / Enterprise users on usage-based billing — see the AI Credits column instead.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .italic()
@@ -119,22 +126,22 @@ private struct CostFormulaPopover: View {
                 Divider()
 
                 section(
-                    title: "Retail tokens",
+                    title: "AI Credits  (default after 2026-06-01)",
                     icon: "shippingbox.fill",
                     accent: .blue
                 ) {
                     formula("fresh = max(0, input − cache_read − cache_write)")
-                    formula("cost = fresh × in_rate")
-                    formula("     + cache_read × 0.10 × in_rate")
-                    formula("     + cache_write × 1.25 × in_rate")
-                    formula("     + output × out_rate")
+                    formula("cost  = fresh        × in_rate")
+                    formula("      + cache_read   × cache_read_rate")
+                    formula("      + cache_write  × cache_write_rate   (Anthropic)")
+                    formula("      + output       × out_rate")
 
-                    Text("Per-million-token rates (2025 public list prices):")
+                    Text("Per-million-token rates from GitHub Docs (2026-05):")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .padding(.top, 2)
                     rateTable
-                    Text("Model name matching strips suffixes like `-internal`, `-1m`, `-xhigh` (`PricingCatalog.canonical`), so `claude-opus-4.7-1m-internal` falls through to the Opus row.")
+                    Text("Model name matching strips `-internal`, `-1m`, `-xhigh`, `-high`, `--effort=` (`PricingCatalog.canonical`). E.g. `claude-opus-4.7-1m-internal` falls through to the Opus row.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .italic()
@@ -154,7 +161,7 @@ private struct CostFormulaPopover: View {
             }
             .padding(14)
         }
-        .frame(width: 360, height: 480)
+        .frame(width: 380, height: 520)
     }
 
     private var header: some View {
@@ -196,12 +203,19 @@ private struct CostFormulaPopover: View {
 
     private var rateTable: some View {
         VStack(alignment: .leading, spacing: 2) {
-            rateRow("Claude Opus", "$15", "$75")
-            rateRow("Claude Sonnet", "$3", "$15")
-            rateRow("Claude Haiku", "$1", "$5")
-            rateRow("GPT-5 / GPT-5 Codex", "$1.25", "$10")
-            rateRow("GPT-5 mini", "$0.25", "$2")
-            rateRow("GPT-4.1", "$2", "$8")
+            rateRow("Claude Opus 4.5/4.6/4.7", "$5",     "$25")
+            rateRow("Claude Sonnet 4.x",       "$3",     "$15")
+            rateRow("Claude Haiku 4.5",        "$1",     "$5")
+            rateRow("GPT-5.5",                 "$5",     "$30")
+            rateRow("GPT-5.4",                 "$2.50",  "$15")
+            rateRow("GPT-5.4 mini",            "$0.75",  "$4.50")
+            rateRow("GPT-5.4 nano",            "$0.20",  "$1.25")
+            rateRow("GPT-5.2 / 5.3-Codex",     "$1.75",  "$14")
+            rateRow("GPT-5 mini / Raptor mini","$0.25",  "$2")
+            rateRow("GPT-4.1",                 "$2",     "$8")
+            rateRow("Gemini 3.1 Pro",          "$2",     "$12")
+            rateRow("Gemini 2.5 Pro / Goldeneye","$1.25","$10")
+            rateRow("Gemini 3 Flash",          "$0.50",  "$3")
         }
         .font(.system(size: 11, design: .monospaced))
     }
