@@ -14,6 +14,20 @@ Today / 7-day / 30-day breakdown, cache-hit rate, per-model split, estimated USD
 
 GitHub Copilot **Pro / Pro+ / Business** users see their usage at <https://github.com/settings/billing/usage>. **Enterprise** users do not — the page caps out at "0 % of unlimited", and there is no API to retrieve per-turn token data. CopilotMeter fills that gap by reading the same `events.jsonl` + Chat-transcript files Copilot writes locally and aggregating them itself. It works for any plan, but Enterprise users are the ones who *need* it.
 
+## Lightweight by design
+
+| | Size |
+|---|---|
+| `.dmg` download | ~ 900 KB |
+| Installed `.app` bundle | 1.6 MB |
+| Native arm64 binary | 1.2 MB |
+| Resident memory while running | ~ 45 MB |
+| CPU when idle | 0 % |
+| Local refresh tick | every 60 s (parses only the new tail of each `events.jsonl` / transcript) |
+| Remote refresh tick | every 1 h (incremental; typically < 1 KB of SSH traffic per host after the first sync) |
+
+No background daemons, no helper tools, no telemetry. The whole app is one Swift binary linked against system frameworks (no Electron, no embedded Node/Python runtime — the small Python extractor we ship is only ever piped over SSH to remote hosts, never spawned locally).
+
 ## 📣 News
 
 - **v0.1.6** — Distinguish VS Code Chat **Agent mode** from **Ask/Edit mode** in workspace transcripts. Sessions with `tool.execution_start` events (i.e. agentic tool use like `run_in_terminal`, `replace_string_in_file`) are now classified as `vscodeAgent` instead of `vscodeChat`. Includes a one-shot migration that retroactively reclassifies records ingested by v0.1.5. ([#12](https://github.com/zhongjiechen/CopilotMeter/pull/12))
