@@ -40,6 +40,7 @@ No background daemons, no helper tools. The whole app is one Swift binary linked
 
 ## 📣 News
 
+- **v0.1.7** — **In-app update notifications.** CopilotMeter now polls GitHub Releases at most once every 6 h and shows an orange banner in the popover (plus a dot on the menu-bar icon) when a newer version is available. Click "Open" to view the release notes & DMG. Opt out anytime with `defaults write dev.local.CopilotMeter disableUpdateChecks 1`. ([#13](https://github.com/zhongjiechen/CopilotMeter/pull/13))
 - **v0.1.6** — Distinguish VS Code Chat **Agent mode** from **Ask/Edit mode** in workspace transcripts. Sessions with `tool.execution_start` events (i.e. agentic tool use like `run_in_terminal`, `replace_string_in_file`) are now classified as `vscodeAgent` instead of `vscodeChat`. Includes a one-shot migration that retroactively reclassifies records ingested by v0.1.5. ([#12](https://github.com/zhongjiechen/CopilotMeter/pull/12))
 - **v0.1.5** — **Big undercount fix for VS Code Copilot Chat users.** We now also scan per-workspace transcripts (`workspaceStorage/<wkHash>/GitHub.copilot-chat/transcripts/*.jsonl`) on both local and remote, since modern Copilot Chat (≥0.47) no longer fully mirrors them into the central session-store DB. One of my remotes went from showing 12 monthly requests to 249 after this fix. Works for both local Mac and SSH'd-into hosts. ([#11](https://github.com/zhongjiechen/CopilotMeter/pull/11))
 - **v0.1.4** — Distinguish GitHub Coding Agent sessions from terminal CLI. ([#9](https://github.com/zhongjiechen/CopilotMeter/pull/9))
