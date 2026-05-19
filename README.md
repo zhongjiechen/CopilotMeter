@@ -1,12 +1,18 @@
 # CopilotMeter
 
-A tiny native macOS menu-bar app that tracks **how much you're actually using GitHub Copilot** — even when your subscription is "unlimited" and the built-in indicator stays stuck at 0 %.
+> **Built for GitHub Copilot Enterprise users.** Your seat says *Unlimited*, the official dashboard reports 0 % usage forever — and you have no idea how much you're actually spending in tokens, requests, or USD equivalents. CopilotMeter parses Copilot's local data files directly and gives you a real per-day / per-week / per-month breakdown the GitHub UI won't.
+
+A tiny native macOS menu-bar app that tracks **how much you're actually using GitHub Copilot** — independent of whatever the in-product indicator shows.
 
 <p align="center">
   <img src="docs/overview.png" alt="CopilotMeter popover" width="420">
 </p>
 
-Today / 7-day / 30-day breakdown, cache-hit rate, per-model split, estimated USD cost. Swift + SwiftUI, Apple Silicon native, runs 100 % locally.
+Today / 7-day / 30-day breakdown, cache-hit rate, per-model split, estimated USD cost (both GitHub-billable premium-request units and equivalent retail Anthropic/OpenAI token cost). Swift + SwiftUI, Apple Silicon native, runs 100 % locally.
+
+## Why does this exist?
+
+GitHub Copilot **Pro / Pro+ / Business** users see their usage at <https://github.com/settings/billing/usage>. **Enterprise** users do not — the page caps out at "0 % of unlimited", and there is no API to retrieve per-turn token data. CopilotMeter fills that gap by reading the same `events.jsonl` + Chat-transcript files Copilot writes locally and aggregating them itself. It works for any plan, but Enterprise users are the ones who *need* it.
 
 ## 📣 News
 
@@ -46,14 +52,19 @@ No user prompts or assistant responses ever leave the remote. Auto-refreshes hou
 
 ## Data sources
 
-| Source | Path |
-|---|---|
-| Copilot CLI / VS Code Agent | `~/.copilot/session-state/<sid>/events.jsonl` |
-| VS Code Copilot Chat | `~/Library/.../github.copilot-chat/session-store.db` |
-| Remote hosts | extracted over SSH from each remote's own `~/.copilot/` |
-| Cache | `~/Library/Application Support/CopilotMeter/cache.db` |
+| Source | Where | Token data? |
+|---|---|---|
+| Copilot CLI | `~/.copilot/session-state/<sid>/events.jsonl` | ✅ full |
+| VS Code Agent (local) | same path — invoked by VS Code Chat in Agent mode | ✅ full |
+| VS Code Agent (remote vscode-server) | `workspaceStorage/<wkHash>/GitHub.copilot-chat/transcripts/<sid>.jsonl` | ❌ count-only [^1] |
+| VS Code Ask / Edit Chat | central `globalStorage/.../session-store.db` + transcripts | ❌ count-only [^1] |
+| Coding Agent (cloud-dispatched) | events.jsonl with `hostType=github` | ✅ full |
+| Remote hosts | extracted over SSH from each remote's own data dirs | same per-source as above |
+| Cache | `~/Library/Application Support/CopilotMeter/cache.db` | — |
 
-No network calls except the SSH/rsync to enabled remotes.
+[^1]: VS Code Copilot Chat marks token-bearing `assistant.usage` events as `ephemeral` and filters them out before writing to disk, so per-turn input/output token counts simply aren't available on the local filesystem. We can only count requests for those sources.
+
+No network calls except the SSH to enabled remotes.
 
 ## Build from source
 
