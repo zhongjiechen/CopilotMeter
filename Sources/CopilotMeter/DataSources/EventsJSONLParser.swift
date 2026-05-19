@@ -22,7 +22,7 @@ public final class EventsJSONLParser {
         /// True when a session.shutdown event was observed.
         public let sessionEnded: Bool
         /// `context.hostType` from session.start, when present. Used by the
-        /// caller to classify the session source as Coding Agent vs CLI etc.
+        /// caller to classify the session source as Cloud Agent vs CLI etc.
         public let hostType: String?
     }
 

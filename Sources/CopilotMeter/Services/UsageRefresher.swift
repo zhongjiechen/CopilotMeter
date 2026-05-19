@@ -391,9 +391,10 @@ enum RefreshWorker {
     /// Classification of each event.jsonl session uses two signals from the
     /// session.start payload:
     ///
-    ///   1. `context.hostType == "github"` → GitHub Copilot Coding Agent (the
+    ///   1. `context.hostType == "github"` → GitHub Copilot **Cloud Agent** (the
     ///      cloud-dispatched agent fired off from a PR or VS Code's "Delegate"
-    ///      feature).  → `.codingAgent`
+    ///      feature).  → `.codingAgent` (rawValue kept for cache stability;
+    ///      user-facing label is "Cloud Agent").
     ///   2. session_id present in the remote's VS Code Copilot Chat DB
     ///      `sessions` table → VS Code Copilot Chat in agent mode. → `.vscodeAgent`
     ///   3. Otherwise → terminal `copilot` CLI. → `.copilotCLI`
@@ -526,7 +527,7 @@ enum RefreshWorker {
                 remoteName: remoteName
             )
 
-            // hostType=github → this is a GitHub Copilot Coding Agent session
+            // hostType=github → this is a GitHub Copilot Cloud Agent session
             // (cloud-dispatched, e.g. via /delegate). Override the source.
             let finalSource: UsageRecord.Source = (parsed.hostType == "github") ? .codingAgent : initialSource
 
