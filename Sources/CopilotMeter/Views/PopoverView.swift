@@ -42,6 +42,10 @@ struct PopoverView: View {
             Label("CopilotMeter", systemImage: "chart.bar.fill")
                 .labelStyle(.titleAndIcon)
                 .font(.system(size: 13, weight: .semibold))
+            Text("v\(updates.currentVersion)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .help("Current installed version. Check the orange banner above when a new release is available — or visit the Releases page.")
             Spacer()
             if refresher.isRefreshing {
                 ProgressView().controlSize(.mini)
