@@ -88,9 +88,17 @@ public final class VSCodeChatTranscriptsReader {
         let data = (try? handle.readToEnd()) ?? Data()
         if data.isEmpty { return 0 }
 
+        // Two-pass parse:
+        //   pass 1 — scan the chunk for any `tool.execution_start` so we
+        //            classify this session as Agent vs Chat for THIS run
+        //   pass 2 — emit user.message records with the correct source
+        // If the session was already classified Agent in earlier runs, we
+        // also need to honor that, so we also retroactively reclassify any
+        // prior `.vscodeChat` rows below.
+        var sawToolCall = false
+        var userMessages: [(messageId: String, ts: Date)] = []
         var consumed: Int64 = 0
         var lastEventAt: Date?
-        var inserted = 0
 
         let bytes = [UInt8](data)
         var lineStart = 0
@@ -102,15 +110,26 @@ public final class VSCodeChatTranscriptsReader {
             guard !lineBytes.isEmpty,
                   let evt = try? JSONSerialization.jsonObject(with: lineBytes) as? [String: Any]
             else { continue }
-            guard (evt["type"] as? String) == "user.message" else { continue }
+            let etype = evt["type"] as? String
+            if etype == "tool.execution_start" {
+                sawToolCall = true
+                continue
+            }
+            if etype != "user.message" { continue }
             guard let mid = evt["id"] as? String, !mid.isEmpty else { continue }
             let ts = Self.parseTimestamp(evt["timestamp"] as? String) ?? Date()
             lastEventAt = ts
+            userMessages.append((messageId: mid, ts: ts))
+        }
+
+        let source: UsageRecord.Source = sawToolCall ? .vscodeAgent : .vscodeChat
+        var inserted = 0
+        for um in userMessages {
             let rec = UsageRecord(
-                timestamp: ts,
+                timestamp: um.ts,
                 sessionId: sessionId,
-                messageId: mid,
-                source: .vscodeChat,
+                messageId: um.messageId,
+                source: source,
                 model: "GitHub Copilot Chat",
                 outputTokens: 0,
                 inputTokens: 0,
@@ -122,6 +141,15 @@ public final class VSCodeChatTranscriptsReader {
             )
             try cache.insertRecord(rec, kind: .message)
             inserted += 1
+        }
+
+        // Retroactively reclassify any previously-ingested .vscodeChat rows
+        // for this session if we now know it was Agent mode.
+        if sawToolCall {
+            try cache.reclassifyTranscriptChatAsAgent(
+                sessionIds: [sessionId],
+                remoteName: remoteName
+            )
         }
 
         try cache.updateFileState(

@@ -56,6 +56,77 @@ public final class CacheStore {
         try migrate(table: "records", addColumn: "remote_name", typeDecl: "TEXT")
         try migrate(table: "file_state", addColumn: "remote_name", typeDecl: "TEXT")
         try db.exec("CREATE INDEX IF NOT EXISTS idx_records_remote ON records(remote_name);")
+
+        try db.exec("""
+            CREATE TABLE IF NOT EXISTS schema_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+        """)
+        try migrationV016SplitTranscriptAgent()
+    }
+
+    /// v0.1.6 migration: PR #11 ingested every transcript user.message as
+    /// `.vscodeChat`. PR #12 introduced the Agent-vs-Ask distinction. This
+    /// migration wipes the **transcript-derived** records (identified by the
+    /// hardcoded `model = "GitHub Copilot Chat"`) and resets the per-file
+    /// byte offsets so the next refresh re-ingests them with the new
+    /// classification. Token data (events.jsonl `.vscodeAgent` rows with
+    /// real model names like `claude-opus-4.7-…`) is unaffected.
+    private func migrationV016SplitTranscriptAgent() throws {
+        var already = false
+        try db.query("SELECT value FROM schema_meta WHERE key = ?",
+                     bindings: ["v016_split_transcript_agent_v2"]) { row in
+            already = (row.string(0) ?? "") == "done"
+        }
+        if already { return }
+
+        // Delete only transcript-derived chat/agent rows. The
+        // model="GitHub Copilot Chat" filter excludes events.jsonl-derived
+        // rows (those have real model names).
+        try db.execute("""
+            DELETE FROM records
+             WHERE source IN (?, ?) AND kind = ? AND model = ?
+        """, bindings: [
+            UsageRecord.Source.vscodeChat.rawValue,
+            UsageRecord.Source.vscodeAgent.rawValue,
+            RecordKind.message.rawValue,
+            "GitHub Copilot Chat",
+        ])
+        // Reset byte-offsets for local transcript files so the reader
+        // re-scans them from byte 0. Remote offsets are handled separately
+        // in UsageRefresher (we delete the per-host offsets.json file).
+        try db.execute(
+            "DELETE FROM file_state WHERE file_path LIKE '%/GitHub.copilot-chat/transcripts/%'"
+        )
+        // Recovery for the first iteration of this migration which wiped
+        // events.jsonl-derived rows too: reset their file_state byte
+        // offsets so the next refresh repopulates them (INSERT OR IGNORE
+        // dedups so this is safe for installs that didn't hit the bug).
+        try db.execute(
+            "DELETE FROM file_state WHERE file_path LIKE '%/.copilot/session-state/%'"
+        )
+        try db.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+            bindings: ["v016_split_transcript_agent_v2", "done"]
+        )
+    }
+
+    /// Returns true iff the named migration has been recorded as done.
+    /// Used by `UsageRefresher` to also wipe out remote `offsets.json`
+    /// caches on the same one-shot upgrade path.
+    public func migrationDone(_ key: String) -> Bool {
+        var done = false
+        try? db.query("SELECT value FROM schema_meta WHERE key = ?", bindings: [key]) { row in
+            done = (row.string(0) ?? "") == "done"
+        }
+        return done
+    }
+    public func markMigrationDone(_ key: String) {
+        try? db.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+            bindings: [key, "done"]
+        )
     }
 
     private func migrate(table: String, addColumn col: String, typeDecl: String) throws {
@@ -168,10 +239,10 @@ public final class CacheStore {
     }
 
     /// Per-session count of records that came from VS Code Chat workspace
-    /// transcripts (source=vscodeChat, kind=msg). Used to de-dup against the
-    /// central `session-store.db` so we don't double-count overlapping
-    /// sessions: when the transcripts have ≥ as many turns for a session as
-    /// the central DB, we skip the DB rows for that session.
+    /// transcripts (source=vscodeChat OR vscodeAgent, kind=msg). Used to
+    /// de-dup against the central `session-store.db` so we don't double-count
+    /// overlapping sessions: when the transcripts have ≥ as many turns for a
+    /// session as the central DB, we skip the DB rows for that session.
     public func chatTranscriptSessionCounts(remoteName: String?) throws -> [String: Int] {
         var out: [String: Int] = [:]
         let sql: String
@@ -179,22 +250,24 @@ public final class CacheStore {
         if let name = remoteName {
             sql = """
                 SELECT session_id, COUNT(*) FROM records
-                 WHERE source = ? AND kind = ? AND remote_name = ?
+                 WHERE source IN (?, ?) AND kind = ? AND remote_name = ?
                  GROUP BY session_id
             """
             bindings = [
                 UsageRecord.Source.vscodeChat.rawValue,
+                UsageRecord.Source.vscodeAgent.rawValue,
                 RecordKind.message.rawValue,
                 name,
             ]
         } else {
             sql = """
                 SELECT session_id, COUNT(*) FROM records
-                 WHERE source = ? AND kind = ? AND remote_name IS NULL
+                 WHERE source IN (?, ?) AND kind = ? AND remote_name IS NULL
                  GROUP BY session_id
             """
             bindings = [
                 UsageRecord.Source.vscodeChat.rawValue,
+                UsageRecord.Source.vscodeAgent.rawValue,
                 RecordKind.message.rawValue,
             ]
         }
@@ -204,6 +277,39 @@ public final class CacheStore {
             }
         }
         return out
+    }
+
+    /// Reclassifies VS Code Chat workspace-transcript rows for the given
+    /// session ids from `.vscodeChat` to `.vscodeAgent`. Used when the
+    /// extractor sees a `tool.execution_start` for a session it previously
+    /// ingested as plain Chat. `remoteName == nil` scopes to local rows;
+    /// otherwise scopes to the given remote.
+    public func reclassifyTranscriptChatAsAgent(sessionIds: Set<String>, remoteName: String?) throws {
+        guard !sessionIds.isEmpty else { return }
+        // SQLite has no native array binding — build a placeholder list.
+        let placeholders = Array(repeating: "?", count: sessionIds.count).joined(separator: ",")
+        var bindings: [Any?] = [
+            UsageRecord.Source.vscodeAgent.rawValue,
+            UsageRecord.Source.vscodeChat.rawValue,
+            RecordKind.message.rawValue,
+        ]
+        bindings.append(contentsOf: sessionIds.map { $0 as Any })
+        if let name = remoteName {
+            let sql = """
+                UPDATE records SET source = ?
+                 WHERE source = ? AND kind = ? AND remote_name = ?
+                   AND session_id IN (\(placeholders))
+            """
+            bindings.insert(name, at: 3)
+            try db.execute(sql, bindings: bindings)
+        } else {
+            let sql = """
+                UPDATE records SET source = ?
+                 WHERE source = ? AND kind = ? AND remote_name IS NULL
+                   AND session_id IN (\(placeholders))
+            """
+            try db.execute(sql, bindings: bindings)
+        }
     }
 
     public func allRecords(since: Date? = nil) throws -> [UsageRecord] {

@@ -140,31 +140,37 @@ def process_file(path: str, sid: str, start_offset: int) -> int:
     return start_offset + consumed
 
 
-def process_transcript(path: str, sid: str, start_offset: int) -> int:
+def process_transcript(path: str, sid: str, start_offset: int) -> tuple:
     """Reads a VS Code Copilot Chat transcript file from `start_offset`.
 
     Emits one `wt` event per `user.message` line. Deliberately does NOT
-    emit the message content. Returns the new byte offset after the last
-    complete line consumed.
+    emit the message content.
+
+    Also tracks whether this run saw any `tool.execution_start` event for
+    the session — Agent mode's calling card. The caller emits a separate
+    `wagent` marker per Agent session so the host can classify those
+    sessions distinctly from pure Ask/Edit chats. Returns
+    `(new_byte_offset, saw_tool_call)`.
     """
     try:
         size = os.path.getsize(path)
     except OSError:
-        return start_offset
+        return start_offset, False
     # File rotation / truncation safeguard.
     if start_offset > size:
         start_offset = 0
     if start_offset >= size:
-        return start_offset
+        return start_offset, False
     try:
         with open(path, "rb") as f:
             f.seek(start_offset)
             data = f.read()
     except OSError:
-        return start_offset
+        return start_offset, False
 
     lines = data.split(b"\n")
     consumed = 0
+    saw_tool = False
     for i, raw in enumerate(lines):
         is_last = i == len(lines) - 1
         if is_last:
@@ -178,7 +184,11 @@ def process_transcript(path: str, sid: str, start_offset: int) -> int:
             continue
         if not isinstance(evt, dict):
             continue
-        if evt.get("type") != "user.message":
+        etype = evt.get("type")
+        if etype == "tool.execution_start":
+            saw_tool = True
+            continue
+        if etype != "user.message":
             continue
         ts = evt.get("timestamp")
         mid = evt.get("id")
@@ -187,7 +197,7 @@ def process_transcript(path: str, sid: str, start_offset: int) -> int:
         emit({
             "sid": sid, "ts": ts, "t": "wt", "mid": mid,
         })
-    return start_offset + consumed
+    return start_offset + consumed, saw_tool
 
 
 def main():
@@ -225,7 +235,12 @@ def main():
             )
             okey = "wsx:" + wkh + "/" + sid
             start = int(offsets.get(okey, 0))
-            new_off = process_transcript(tx_path, sid, start)
+            new_off, saw_tool = process_transcript(tx_path, sid, start)
+            if saw_tool:
+                # Stamps this session as Agent mode (has tool calls). The
+                # host will re-classify any existing user.message records
+                # for this session from .vscodeChat to .vscodeAgent.
+                emit({"sid": sid, "t": "wagent"})
             emit({"okey": okey, "off": new_off})
 
 
