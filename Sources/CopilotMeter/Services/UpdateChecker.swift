@@ -43,7 +43,7 @@ public final class UpdateChecker: ObservableObject {
         return Self.compareSemver(r.tagName, currentVersion) == .orderedDescending
     }
 
-    public static let minCheckInterval: TimeInterval = 6 * 3600  // 6 h
+    public static let minCheckInterval: TimeInterval = 7 * 24 * 3600  // 1 week
     public static let releasesURL = URL(
         string: "https://api.github.com/repos/zhongjiechen/CopilotMeter/releases/latest"
     )!
