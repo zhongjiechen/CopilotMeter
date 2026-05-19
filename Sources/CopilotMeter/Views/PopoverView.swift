@@ -2,11 +2,15 @@ import SwiftUI
 
 struct PopoverView: View {
     @ObservedObject var refresher: UsageRefresher
+    @ObservedObject var updates: UpdateChecker
     @State private var selectedWindow: TimeWindow = .today
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            if updates.hasUpdate, let r = updates.latestRelease {
+                UpdateBanner(release: r, currentVersion: updates.currentVersion)
+            }
             SourceLegend()
             tilesRow
             HostsPanel(refresher: refresher)
