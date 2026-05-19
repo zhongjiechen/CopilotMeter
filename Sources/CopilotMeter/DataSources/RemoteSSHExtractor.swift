@@ -68,7 +68,16 @@ public enum RemoteSSHExtractor {
         case assistantMessage(sid: String, ts: Date, model: String?, messageId: String?, outputTokens: Int)
         case sessionShutdownRow(sid: String, ts: Date, model: String, inputTokens: Int, cacheRead: Int, cacheWrite: Int, premiumCost: Double?)
         case sessionEnded(sid: String)
+        /// One VS Code Chat user.message turn from a workspaceStorage transcript.
+        /// `sessionId` is the chat session UUID (filename of the .jsonl);
+        /// `messageId` is the event's own UUID and is used for dedup.
+        case workspaceChatTurn(sid: String, ts: Date, messageId: String)
+        /// Resume marker for a CLI/Agent events.jsonl file (keyed by session id).
         case fileOffset(sid: String, byteOffset: Int64)
+        /// Resume marker for a VS Code Chat transcript file (composite key
+        /// `wsx:<workspaceHash>/<sessionId>` to disambiguate the same session
+        /// id appearing in multiple workspaces).
+        case transcriptOffset(key: String, byteOffset: Int64)
     }
 
     public struct ExtractResult {
@@ -138,11 +147,18 @@ public enum RemoteSSHExtractor {
 
         let events = parseStream(outData)
 
-        // Persist new offsets for the next run.
+        // Persist new offsets for the next run. Both CLI session offsets and
+        // transcript composite-key offsets share the same dict — the keys are
+        // disjoint by construction (transcript keys start with "wsx:").
         var newOffsets: [String: Int64] = [:]
         for e in events {
-            if case .fileOffset(let sid, let off) = e {
+            switch e {
+            case .fileOffset(let sid, let off):
                 newOffsets[sid] = off
+            case .transcriptOffset(let key, let off):
+                newOffsets[key] = off
+            default:
+                break
             }
         }
         saveOffsets(newOffsets, for: remote)
@@ -215,6 +231,14 @@ public enum RemoteSSHExtractor {
             lineStart = i + 1
             guard !lineBytes.isEmpty,
                   let obj = try? JSONSerialization.jsonObject(with: lineBytes) as? [String: Any] else { continue }
+
+            // Transcript progress marker (composite key).
+            if let okey = obj["okey"] as? String,
+               let off = obj["off"] as? Int {
+                out.append(.transcriptOffset(key: okey, byteOffset: Int64(off)))
+                continue
+            }
+
             guard let sid = obj["sid"] as? String else { continue }
 
             if let off = obj["off"] as? Int {
@@ -254,6 +278,13 @@ public enum RemoteSSHExtractor {
                 ))
             case "end":
                 out.append(.sessionEnded(sid: sid))
+            case "wt":
+                guard let mid = obj["mid"] as? String else { continue }
+                out.append(.workspaceChatTurn(
+                    sid: sid,
+                    ts: parseTimestamp(obj["ts"] as? String),
+                    messageId: mid
+                ))
             default:
                 break
             }

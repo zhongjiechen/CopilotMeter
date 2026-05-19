@@ -167,6 +167,45 @@ public final class CacheStore {
         }
     }
 
+    /// Per-session count of records that came from VS Code Chat workspace
+    /// transcripts (source=vscodeChat, kind=msg). Used to de-dup against the
+    /// central `session-store.db` so we don't double-count overlapping
+    /// sessions: when the transcripts have ≥ as many turns for a session as
+    /// the central DB, we skip the DB rows for that session.
+    public func chatTranscriptSessionCounts(remoteName: String?) throws -> [String: Int] {
+        var out: [String: Int] = [:]
+        let sql: String
+        let bindings: [Any?]
+        if let name = remoteName {
+            sql = """
+                SELECT session_id, COUNT(*) FROM records
+                 WHERE source = ? AND kind = ? AND remote_name = ?
+                 GROUP BY session_id
+            """
+            bindings = [
+                UsageRecord.Source.vscodeChat.rawValue,
+                RecordKind.message.rawValue,
+                name,
+            ]
+        } else {
+            sql = """
+                SELECT session_id, COUNT(*) FROM records
+                 WHERE source = ? AND kind = ? AND remote_name IS NULL
+                 GROUP BY session_id
+            """
+            bindings = [
+                UsageRecord.Source.vscodeChat.rawValue,
+                RecordKind.message.rawValue,
+            ]
+        }
+        try db.query(sql, bindings: bindings) { row in
+            if let sid = row.string(0) {
+                out[sid] = row.int(1)
+            }
+        }
+        return out
+    }
+
     public func allRecords(since: Date? = nil) throws -> [UsageRecord] {
         var rows: [UsageRecord] = []
         let sql: String

@@ -13,6 +13,40 @@ struct CopilotMeterApp: App {
             ProcessInfo.processInfo.environment["COPILOTMETER_PREVIEW"] == "1" {
             PreviewWindowController.shared.show()
         }
+        // Headless one-shot mode for diagnostics: runs a full refresh (local +
+        // all enabled remotes), prints aggregate counts, and exits. Useful
+        // when validating ingestion changes without dealing with the
+        // menu-bar UI lifecycle.
+        if CommandLine.arguments.contains("--once") {
+            Self.runOnceAndExit()
+        }
+    }
+
+    private static func runOnceAndExit() -> Never {
+        let (cfg, _) = RemotesConfig.load()
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let sessionStateDir = home.appendingPathComponent(".copilot/session-state")
+        let result = RefreshWorker.run(
+            cachePath: CacheStore.defaultPath,
+            sessionStateDir: sessionStateDir,
+            remotes: cfg.remotes
+        )
+        let snap = result.snapshot
+        print("== UsageRefresher one-shot result ==")
+        if let err = result.errorMessage { print("error: \(err)") }
+        for status in result.remoteStatuses {
+            print("remote \(status.host): \(status.phase.rawValue)  err=\(status.lastError ?? "-")")
+        }
+        print("byWindowByRemote (today):")
+        for (key, agg) in (snap.byWindowByRemote[.today] ?? [:]) {
+            print("  \(key ?? "<local>"): requests=\(Int(agg.requests))")
+        }
+        print("byWindowByRemote (month):")
+        for (key, agg) in (snap.byWindowByRemote[.month] ?? [:]) {
+            print("  \(key ?? "<local>"): requests=\(Int(agg.requests))")
+        }
+        print("blindChatByWindow (month): \(snap.blindChatByWindow[.month] ?? 0)")
+        exit(0)
     }
 
     var body: some Scene {

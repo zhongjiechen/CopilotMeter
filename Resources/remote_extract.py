@@ -2,27 +2,40 @@
 """
 CopilotMeter — remote-side usage extractor.
 
-Streamed over SSH and run on the remote host. Reads
-~/.copilot/session-state/<sid>/events.jsonl files, emits one compact JSON
-line per token-relevant event (assistant.message, session.shutdown,
-session.start).
+Streamed over SSH and run on the remote host. Reads two sources:
+
+  1. ~/.copilot/session-state/<sid>/events.jsonl  (Copilot CLI / Agent)
+  2. ~/.vscode-server/data/User/workspaceStorage/<wkh>/GitHub.copilot-chat/
+       transcripts/<sid>.jsonl                    (VS Code Copilot Chat)
+
+Emits one compact JSON line per token-relevant event so the host app can
+re-hydrate UsageRecords.
 
 Crucially:
-  - Only events.jsonl is opened (we never touch plan.md, files/, etc.)
-  - We accept a JSON map of {session_id: byte_offset} on stdin and resume
-    each file from that offset, so subsequent runs send only new bytes.
-  - Output is bounded: a 200 MB session-state directory typically yields
-    a ~3 MB extract.
+  - We only open events.jsonl / transcripts/*.jsonl — never plan.md, files/,
+    debug-logs/, or anything else.
+  - We accept a JSON map of {key: byte_offset} on argv (base64-encoded JSON)
+    and resume each file from that offset, so subsequent runs send only new
+    bytes. Keys are `<sid>` for CLI files and `wsx:<workspaceHash>/<sid>`
+    for transcript files.
+  - For transcripts we DO NOT emit message content (prompt text never leaves
+    the remote process). We only count user.message events.
 
 Output format (one JSON object per line):
-  {"sid": "<session-id>", "off": 12345}                 # progress marker, final entry per session
+  # CLI / Agent events.jsonl —
+  {"sid": "<sid>", "off": 12345}                        # progress marker
   {"sid": "...", "ts": "...", "t": "m", "model": "...",
    "mid": "...", "out": 200}                            # assistant.message
   {"sid": "...", "ts": "...", "t": "s", "model": "...",
    "in": 1234, "cr": 567, "cw": 0, "cost": 1.0}         # session.shutdown rollup
   {"sid": "...", "ts": "...", "t": "init",
-   "sm": "claude-opus-4.7"}                             # session.start (selectedModel)
-  {"sid": "...", "t": "end"}                            # marks session.shutdown was seen
+   "sm": "claude-opus-4.7"}                             # session.start
+  {"sid": "...", "t": "end"}                            # session.shutdown seen
+
+  # VS Code Chat workspace transcripts —
+  {"okey": "wsx:<wkh>/<sid>", "off": 99999}             # transcript progress
+  {"sid": "<sid>", "ts": "...", "t": "wt",
+   "mid": "<event-uuid>"}                               # user.message (one per turn)
 
 Robust to malformed JSON lines (skip), unknown event types (skip), and
 files that are mid-write (truncated trailing line is ignored; the resume
@@ -38,6 +51,13 @@ def usage_dir() -> str:
     return os.path.join(os.path.expanduser("~"), ".copilot", "session-state")
 
 
+def vscode_chat_workspace_root() -> str:
+    return os.path.join(
+        os.path.expanduser("~"),
+        ".vscode-server", "data", "User", "workspaceStorage",
+    )
+
+
 def emit(obj):
     json.dump(obj, sys.stdout, separators=(",", ":"))
     sys.stdout.write("\n")
@@ -51,6 +71,9 @@ def process_file(path: str, sid: str, start_offset: int) -> int:
         size = os.path.getsize(path)
     except OSError:
         return start_offset
+    # File rotation / truncation safeguard.
+    if start_offset > size:
+        start_offset = 0
     if start_offset >= size:
         return start_offset
     try:
@@ -117,6 +140,56 @@ def process_file(path: str, sid: str, start_offset: int) -> int:
     return start_offset + consumed
 
 
+def process_transcript(path: str, sid: str, start_offset: int) -> int:
+    """Reads a VS Code Copilot Chat transcript file from `start_offset`.
+
+    Emits one `wt` event per `user.message` line. Deliberately does NOT
+    emit the message content. Returns the new byte offset after the last
+    complete line consumed.
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return start_offset
+    # File rotation / truncation safeguard.
+    if start_offset > size:
+        start_offset = 0
+    if start_offset >= size:
+        return start_offset
+    try:
+        with open(path, "rb") as f:
+            f.seek(start_offset)
+            data = f.read()
+    except OSError:
+        return start_offset
+
+    lines = data.split(b"\n")
+    consumed = 0
+    for i, raw in enumerate(lines):
+        is_last = i == len(lines) - 1
+        if is_last:
+            break
+        consumed += len(raw) + 1
+        if not raw:
+            continue
+        try:
+            evt = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if not isinstance(evt, dict):
+            continue
+        if evt.get("type") != "user.message":
+            continue
+        ts = evt.get("timestamp")
+        mid = evt.get("id")
+        if not mid:
+            continue
+        emit({
+            "sid": sid, "ts": ts, "t": "wt", "mid": mid,
+        })
+    return start_offset + consumed
+
+
 def main():
     # Resume offsets come in via a single base64-encoded JSON arg, so we
     # don't fight ssh/shell quoting and don't share stdin with the script
@@ -129,15 +202,31 @@ def main():
         except Exception:
             offsets = {}
 
+    # 1. Copilot CLI / Agent — events.jsonl files.
     base = usage_dir()
-    if not os.path.isdir(base):
-        return
+    if os.path.isdir(base):
+        for events_path in sorted(glob(os.path.join(base, "*", "events.jsonl"))):
+            sid = os.path.basename(os.path.dirname(events_path))
+            start = int(offsets.get(sid, 0))
+            new_off = process_file(events_path, sid, start)
+            emit({"sid": sid, "off": new_off})
 
-    for events_path in sorted(glob(os.path.join(base, "*", "events.jsonl"))):
-        sid = os.path.basename(os.path.dirname(events_path))
-        start = int(offsets.get(sid, 0))
-        new_off = process_file(events_path, sid, start)
-        emit({"sid": sid, "off": new_off})
+    # 2. VS Code Copilot Chat — per-workspace transcripts.
+    wks_root = vscode_chat_workspace_root()
+    if os.path.isdir(wks_root):
+        pattern = os.path.join(
+            wks_root, "*", "GitHub.copilot-chat", "transcripts", "*.jsonl"
+        )
+        for tx_path in sorted(glob(pattern)):
+            # …/workspaceStorage/<workspaceHash>/GitHub.copilot-chat/transcripts/<sid>.jsonl
+            sid = os.path.splitext(os.path.basename(tx_path))[0]
+            wkh = os.path.basename(
+                os.path.dirname(os.path.dirname(os.path.dirname(tx_path)))
+            )
+            okey = "wsx:" + wkh + "/" + sid
+            start = int(offsets.get(okey, 0))
+            new_off = process_transcript(tx_path, sid, start)
+            emit({"okey": okey, "off": new_off})
 
 
 if __name__ == "__main__":
