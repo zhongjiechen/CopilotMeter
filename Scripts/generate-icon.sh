@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Generates two assets from docs/copilotmeter.png:
+# Generates the macOS .app / DMG icon from docs/copilotmeter.png:
+# composes the coloured helmet illustration on top of a complementary
+# blue gradient squircle (Big Sur+ conventions) and packages it into
+# Resources/AppIcon.icns.
 #
-#   1. Resources/AppIcon.icns        — the macOS .app / DMG icon. Composes the
-#      coloured helmet illustration on top of a complementary blue gradient
-#      squircle (matches Big Sur+ icon conventions) and packages it.
-#
-#   2. Resources/MenuBarIcon.png     — a 22pt monochrome template image used
-#      by SwiftUI as the menu-bar glyph. Rendered with .template so macOS
-#      tints it correctly in light/dark mode. Bundled as @1x/@2x/@3x.
+# (The menu-bar glyph is an SF Symbol — `chart.bar.fill` / `chart.bar`,
+# wired in App.swift — so no separate template image is generated here.)
 #
 # Requires: rsvg-convert, magick (ImageMagick), iconutil.
 set -euo pipefail
@@ -107,75 +105,5 @@ done
 echo "==> Building Resources/AppIcon.icns"
 iconutil --convert icns "$ICONSET" --output "$OUT_DIR/AppIcon.icns"
 
-# ---------------------------------------------------------------------------
-# 2. Menu bar icon — monochrome template
-# ---------------------------------------------------------------------------
-#
-# Drawn as a tight silhouette of the helmet at @1x = 18x18, then exported at
-# @2x = 36x36 and @3x = 54x54. We render solid black on transparent; macOS
-# tints it via the .template rendering mode in SwiftUI.
-
-MB_SVG="$TMP_DIR/menubar.svg"
-cat > "$MB_SVG" <<'SVG'
-<?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Menu-bar template (64×64 viewBox, exported at 18/36/54 px).
-
-  Rules for menu-bar template images on macOS:
-    * Anything non-transparent = ink. macOS only honours the alpha channel.
-    * To create a "hole" in a shape you MUST use either fill-rule=evenodd
-      compound paths or a mask — using fill=#fff on top does NOT work.
-    * At 18 px, only large, well-separated forms are legible. We rely on:
-        - helmet body (outer outline silhouette)
-        - eye-shaped visor (cut OUT, not painted over)
-        - antenna line + dot
-        - 3 chart bars rendered INSIDE the visor cutout
--->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <!-- Helmet + ears, with visor cut-out (fill-rule evenodd). -->
-  <path fill="#000" fill-rule="evenodd"
-        d="
-        M 14 24
-        C 14 14, 22 10, 32 10
-        C 42 10, 50 14, 50 24
-        L 50 42
-        C 50 50, 42 54, 32 54
-        C 22 54, 14 50, 14 42
-        Z
-
-        M 17 16  L 12 9  L 23 13  Z
-
-        M 47 16  L 52 9  L 41 13  Z
-
-        M 21 26
-        h 22
-        a 4 4 0 0 1 4 4
-        v 10
-        a 4 4 0 0 1 -4 4
-        h -22
-        a 4 4 0 0 1 -4 -4
-        v -10
-        a 4 4 0 0 1 4 -4
-        Z
-        "/>
-
-  <!-- Antenna -->
-  <rect x="31" y="2" width="2" height="9" rx="1" ry="1" fill="#000"/>
-  <circle cx="32" cy="3" r="2.4" fill="#000"/>
-
-  <!-- Three little bars inside the (now transparent) visor cutout. -->
-  <rect x="24" y="38"  width="3" height="4"  rx="0.8" fill="#000"/>
-  <rect x="30" y="35"  width="3" height="7"  rx="0.8" fill="#000"/>
-  <rect x="36" y="32"  width="3" height="10" rx="0.8" fill="#000"/>
-</svg>
-SVG
-
-# We export at the three Retina sizes typical for menu bar icons (18 / 36 / 54)
-# and copy them into Resources/ where the .app bundle picker will find them.
-echo "==> Rendering menu-bar template at 18 / 36 / 54 px"
-rsvg-convert -w 18 -h 18 "$MB_SVG" -o "$OUT_DIR/MenuBarIcon.png"
-rsvg-convert -w 36 -h 36 "$MB_SVG" -o "$OUT_DIR/MenuBarIcon@2x.png"
-rsvg-convert -w 54 -h 54 "$MB_SVG" -o "$OUT_DIR/MenuBarIcon@3x.png"
-
 echo "==> Done"
-ls -la "$OUT_DIR/AppIcon.icns" "$OUT_DIR/MenuBarIcon"*.png
+ls -la "$OUT_DIR/AppIcon.icns"
