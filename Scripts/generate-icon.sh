@@ -1,84 +1,98 @@
 #!/usr/bin/env bash
-# Generate CopilotMeter app icon by rendering an SVG with rsvg/magick, then
-# packaging the result as an .icns via iconutil.
+# Generates two assets from docs/copilotmeter.png:
 #
-# Design:
-#   - 1024x1024 master, ~10% safe padding inside macOS squircle
-#   - Linear gradient teal -> indigo, 135° angle
-#   - Three ascending white bars (today / week / month motif) with subtle inner shadow
-#   - Orange accent dot at the tip of the tallest bar
-#   - Soft top highlight for depth
+#   1. Resources/AppIcon.icns        — the macOS .app / DMG icon. Composes the
+#      coloured helmet illustration on top of a complementary blue gradient
+#      squircle (matches Big Sur+ icon conventions) and packages it.
+#
+#   2. Resources/MenuBarIcon.png     — a 22pt monochrome template image used
+#      by SwiftUI as the menu-bar glyph. Rendered with .template so macOS
+#      tints it correctly in light/dark mode. Bundled as @1x/@2x/@3x.
+#
+# Requires: rsvg-convert, magick (ImageMagick), iconutil.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="$ROOT/Resources"
 TMP_DIR="$ROOT/.build/icon-tmp"
 ICONSET="$TMP_DIR/AppIcon.iconset"
+LOGO_SRC="$ROOT/docs/copilotmeter.png"
 
-mkdir -p "$ICONSET"
+mkdir -p "$ICONSET" "$TMP_DIR"
 rm -rf "$ICONSET"/*
 
-SVG_FILE="$TMP_DIR/icon.svg"
+if [[ ! -f "$LOGO_SRC" ]]; then
+    echo "error: $LOGO_SRC not found" >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 1. App icon — colored squircle + helmet artwork
+# ---------------------------------------------------------------------------
+
+SVG_FILE="$TMP_DIR/app-icon.svg"
 MASTER="$TMP_DIR/icon-1024.png"
 
-cat > "$SVG_FILE" <<'SVG'
+# Stage the logo PNG with transparent margins so it sits comfortably inside
+# the safe area (about 80% of the canvas). We also fuzz-remove the near-white
+# studio background so the helmet sits directly on the blue squircle instead
+# of looking like a white sticker.
+STAGED_LOGO="$TMP_DIR/logo-square.png"
+magick "$LOGO_SRC" \
+    -background none \
+    -alpha set \
+    -fuzz 8% -fill none -draw 'color 0,0 floodfill' \
+    -channel A -blur 0x1 +channel \
+    -trim +repage \
+    -resize 760x760 \
+    -gravity center -extent 824x824 \
+    "$STAGED_LOGO"
+
+cat > "$SVG_FILE" <<SVG
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
-    <!-- Diagonal teal -> indigo gradient -->
+    <!-- Background gradient that picks up the helmet's blue palette -->
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#2DD4BF"/>
-      <stop offset="55%" stop-color="#5EA9F2"/>
-      <stop offset="100%" stop-color="#6366F1"/>
+      <stop offset="0%"  stop-color="#A6D5FF"/>
+      <stop offset="50%" stop-color="#6FB8FF"/>
+      <stop offset="100%" stop-color="#3F8FE9"/>
     </linearGradient>
-    <!-- Subtle top gloss -->
+    <!-- Top gloss for that macOS Big Sur feel -->
     <linearGradient id="gloss" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="rgba(255,255,255,0.35)"/>
+      <stop offset="0%"  stop-color="rgba(255,255,255,0.40)"/>
       <stop offset="55%" stop-color="rgba(255,255,255,0.0)"/>
     </linearGradient>
-    <!-- Slight drop-shadow under bars -->
-    <filter id="barShadow" x="-10%" y="-10%" width="120%" height="130%">
-      <feGaussianBlur in="SourceAlpha" stdDeviation="6"/>
-      <feOffset dy="6"/>
-      <feComponentTransfer><feFuncA type="linear" slope="0.35"/></feComponentTransfer>
-      <feComposite in2="SourceGraphic" operator="over"/>
-    </filter>
-    <!-- macOS squircle: corner radius about 22% of size -->
+    <!-- macOS squircle (corner radius ≈ 22% of size) -->
     <clipPath id="squircle">
       <rect x="100" y="100" width="824" height="824" rx="184" ry="184"/>
     </clipPath>
+    <!-- Soft drop shadow under the helmet artwork -->
+    <filter id="logoShadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="14"/>
+      <feOffset dy="8"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.30"/></feComponentTransfer>
+      <feComposite in2="SourceGraphic" operator="over"/>
+    </filter>
   </defs>
 
-  <!-- Background squircle -->
   <g clip-path="url(#squircle)">
     <rect x="100" y="100" width="824" height="824" fill="url(#bg)"/>
-    <!-- Top gloss strip -->
     <rect x="100" y="100" width="824" height="440" fill="url(#gloss)"/>
-    <!-- Faint diagonal sheen line -->
-    <path d="M 100 700 L 924 380" stroke="rgba(255,255,255,0.08)" stroke-width="120" fill="none"/>
-  </g>
-
-  <!-- Drop shadow under bars (rendered as a soft ellipse) -->
-  <ellipse cx="512" cy="888" rx="270" ry="14" fill="rgba(0,0,0,0.28)" filter="url(#barShadow)"/>
-
-  <!-- Three ascending bars; corner radius 24 -->
-  <g>
-    <rect x="290" y="700" width="130" height="170" rx="24" ry="24" fill="rgba(255,255,255,0.86)"/>
-    <rect x="455" y="540" width="130" height="330" rx="24" ry="24" fill="rgba(255,255,255,0.94)"/>
-    <rect x="620" y="340" width="130" height="530" rx="24" ry="24" fill="#FFFFFF"/>
-  </g>
-
-  <!-- Accent dot at the tip of the tallest bar -->
-  <g>
-    <circle cx="685" cy="305" r="40" fill="#FB923C"/>
-    <circle cx="685" cy="305" r="40" fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="5"/>
-    <circle cx="675" cy="295" r="10" fill="rgba(255,255,255,0.85)"/>
+    <!-- Faint diagonal sheen -->
+    <path d="M 100 720 L 924 380" stroke="rgba(255,255,255,0.10)"
+          stroke-width="130" fill="none"/>
+    <!-- Helmet artwork (the user-provided logo) -->
+    <image x="100" y="100" width="824" height="824"
+           xlink:href="$STAGED_LOGO"
+           filter="url(#logoShadow)"
+           preserveAspectRatio="xMidYMid meet"/>
   </g>
 </svg>
 SVG
 
 echo "==> Rendering 1024x1024 master from SVG"
-# Use rsvg-convert directly — it handles SVG gradients and clip-paths properly.
 rsvg-convert -w 1024 -h 1024 "$SVG_FILE" -o "$MASTER"
 file "$MASTER"
 
@@ -90,8 +104,59 @@ for sz in "${SIZES[@]}"; do
     magick "$MASTER" -resize "${dbl}x${dbl}" "$ICONSET/icon_${sz}x${sz}@2x.png"
 done
 
-echo "==> Building .icns"
+echo "==> Building Resources/AppIcon.icns"
 iconutil --convert icns "$ICONSET" --output "$OUT_DIR/AppIcon.icns"
 
+# ---------------------------------------------------------------------------
+# 2. Menu bar icon — monochrome template
+# ---------------------------------------------------------------------------
+#
+# Drawn as a tight silhouette of the helmet at @1x = 18x18, then exported at
+# @2x = 36x36 and @3x = 54x54. We render solid black on transparent; macOS
+# tints it via the .template rendering mode in SwiftUI.
+
+MB_SVG="$TMP_DIR/menubar.svg"
+cat > "$MB_SVG" <<'SVG'
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <g fill="none" stroke="#000" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Antenna -->
+    <line x1="32" y1="2"  x2="32" y2="10"/>
+    <circle cx="32" cy="2" r="2.2" fill="#000" stroke="none"/>
+    <!-- Wifi waves on either side -->
+    <path d="M22 6 q -6 4 -10 8"/>
+    <path d="M42 6 q  6 4  10 8"/>
+    <!-- Helmet outline -->
+    <path d="M 10 18
+             C 10 12, 18 8, 32 8
+             C 46 8, 54 12, 54 18
+             L 54 42
+             C 54 50, 46 56, 32 56
+             C 18 56, 10 50, 10 42
+             Z" fill="#000"/>
+    <!-- Cat ears -->
+    <path d="M 12 18 L 8 10 L 18 14 Z" fill="#000" stroke="#000"/>
+    <path d="M 52 18 L 56 10 L 46 14 Z" fill="#000" stroke="#000"/>
+    <!-- Screen window (cut out as transparent) -->
+    <rect x="18" y="22" width="28" height="22" rx="6" ry="6"
+          fill="#fff" stroke="#fff"/>
+    <!-- Three little bars inside the screen -->
+    <rect x="22" y="36" width="3" height="4" fill="#000" stroke="none"/>
+    <rect x="27" y="33" width="3" height="7" fill="#000" stroke="none"/>
+    <rect x="32" y="30" width="3" height="10" fill="#000" stroke="none"/>
+    <!-- A simple radar tick on the right half of the screen -->
+    <circle cx="40" cy="34" r="3.5" fill="none" stroke="#000" stroke-width="1.5"/>
+    <line x1="40" y1="34" x2="43" y2="31" stroke="#000" stroke-width="1.5"/>
+  </g>
+</svg>
+SVG
+
+# We export at the three Retina sizes typical for menu bar icons (18 / 36 / 54)
+# and copy them into Resources/ where the .app bundle picker will find them.
+echo "==> Rendering menu-bar template at 18 / 36 / 54 px"
+rsvg-convert -w 18 -h 18 "$MB_SVG" -o "$OUT_DIR/MenuBarIcon.png"
+rsvg-convert -w 36 -h 36 "$MB_SVG" -o "$OUT_DIR/MenuBarIcon@2x.png"
+rsvg-convert -w 54 -h 54 "$MB_SVG" -o "$OUT_DIR/MenuBarIcon@3x.png"
+
 echo "==> Done"
-ls -la "$OUT_DIR/AppIcon.icns" "$MASTER"
+ls -la "$OUT_DIR/AppIcon.icns" "$OUT_DIR/MenuBarIcon"*.png

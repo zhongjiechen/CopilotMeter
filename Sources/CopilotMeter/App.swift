@@ -85,7 +85,17 @@ private struct MenuBarLabel: View {
 
         HStack(spacing: 4) {
             ZStack(alignment: .topTrailing) {
-                Image(systemName: total > 0 ? "chart.bar.fill" : "chart.bar")
+                // Custom CopilotMeter helmet template. We load directly from
+                // the bundle so SwiftUI gets a real NSImage we can mark as a
+                // template (auto-tints to follow menu-bar appearance in light
+                // / dark / accent colours).
+                if let menuBarImage = NSImage(named: "MenuBarIcon") {
+                    let _ = (menuBarImage.isTemplate = true)
+                    Image(nsImage: menuBarImage)
+                } else {
+                    // Defensive fallback if the asset failed to ship.
+                    Image(systemName: total > 0 ? "chart.bar.fill" : "chart.bar")
+                }
                 if updates.hasUpdate {
                     Circle()
                         .fill(Color.orange)

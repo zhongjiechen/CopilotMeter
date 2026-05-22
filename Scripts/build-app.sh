@@ -42,6 +42,14 @@ if [[ ! -f "$ROOT/Resources/AppIcon.icns" ]]; then
 fi
 cp "$ROOT/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 
+# Menu-bar icon (monochrome template, three Retina sizes).
+for variant in "" "@2x" "@3x"; do
+    src="$ROOT/Resources/MenuBarIcon${variant}.png"
+    if [[ -f "$src" ]]; then
+        cp "$src" "$APP_BUNDLE/Contents/Resources/MenuBarIcon${variant}.png"
+    fi
+done
+
 # Remote-side extractor (runs over SSH on remote hosts via `python3 -`).
 cp "$ROOT/Resources/remote_extract.py" "$APP_BUNDLE/Contents/Resources/remote_extract.py"
 
