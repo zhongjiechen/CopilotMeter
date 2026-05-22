@@ -118,36 +118,55 @@ iconutil --convert icns "$ICONSET" --output "$OUT_DIR/AppIcon.icns"
 MB_SVG="$TMP_DIR/menubar.svg"
 cat > "$MB_SVG" <<'SVG'
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Menu-bar template (64×64 viewBox, exported at 18/36/54 px).
+
+  Rules for menu-bar template images on macOS:
+    * Anything non-transparent = ink. macOS only honours the alpha channel.
+    * To create a "hole" in a shape you MUST use either fill-rule=evenodd
+      compound paths or a mask — using fill=#fff on top does NOT work.
+    * At 18 px, only large, well-separated forms are legible. We rely on:
+        - helmet body (outer outline silhouette)
+        - eye-shaped visor (cut OUT, not painted over)
+        - antenna line + dot
+        - 3 chart bars rendered INSIDE the visor cutout
+-->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <g fill="none" stroke="#000" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
-    <!-- Antenna -->
-    <line x1="32" y1="2"  x2="32" y2="10"/>
-    <circle cx="32" cy="2" r="2.2" fill="#000" stroke="none"/>
-    <!-- Wifi waves on either side -->
-    <path d="M22 6 q -6 4 -10 8"/>
-    <path d="M42 6 q  6 4  10 8"/>
-    <!-- Helmet outline -->
-    <path d="M 10 18
-             C 10 12, 18 8, 32 8
-             C 46 8, 54 12, 54 18
-             L 54 42
-             C 54 50, 46 56, 32 56
-             C 18 56, 10 50, 10 42
-             Z" fill="#000"/>
-    <!-- Cat ears -->
-    <path d="M 12 18 L 8 10 L 18 14 Z" fill="#000" stroke="#000"/>
-    <path d="M 52 18 L 56 10 L 46 14 Z" fill="#000" stroke="#000"/>
-    <!-- Screen window (cut out as transparent) -->
-    <rect x="18" y="22" width="28" height="22" rx="6" ry="6"
-          fill="#fff" stroke="#fff"/>
-    <!-- Three little bars inside the screen -->
-    <rect x="22" y="36" width="3" height="4" fill="#000" stroke="none"/>
-    <rect x="27" y="33" width="3" height="7" fill="#000" stroke="none"/>
-    <rect x="32" y="30" width="3" height="10" fill="#000" stroke="none"/>
-    <!-- A simple radar tick on the right half of the screen -->
-    <circle cx="40" cy="34" r="3.5" fill="none" stroke="#000" stroke-width="1.5"/>
-    <line x1="40" y1="34" x2="43" y2="31" stroke="#000" stroke-width="1.5"/>
-  </g>
+  <!-- Helmet + ears, with visor cut-out (fill-rule evenodd). -->
+  <path fill="#000" fill-rule="evenodd"
+        d="
+        M 14 24
+        C 14 14, 22 10, 32 10
+        C 42 10, 50 14, 50 24
+        L 50 42
+        C 50 50, 42 54, 32 54
+        C 22 54, 14 50, 14 42
+        Z
+
+        M 17 16  L 12 9  L 23 13  Z
+
+        M 47 16  L 52 9  L 41 13  Z
+
+        M 21 26
+        h 22
+        a 4 4 0 0 1 4 4
+        v 10
+        a 4 4 0 0 1 -4 4
+        h -22
+        a 4 4 0 0 1 -4 -4
+        v -10
+        a 4 4 0 0 1 4 -4
+        Z
+        "/>
+
+  <!-- Antenna -->
+  <rect x="31" y="2" width="2" height="9" rx="1" ry="1" fill="#000"/>
+  <circle cx="32" cy="3" r="2.4" fill="#000"/>
+
+  <!-- Three little bars inside the (now transparent) visor cutout. -->
+  <rect x="24" y="38"  width="3" height="4"  rx="0.8" fill="#000"/>
+  <rect x="30" y="35"  width="3" height="7"  rx="0.8" fill="#000"/>
+  <rect x="36" y="32"  width="3" height="10" rx="0.8" fill="#000"/>
 </svg>
 SVG
 
