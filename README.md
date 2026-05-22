@@ -1,4 +1,8 @@
-# CopilotMeter
+<p align="center">
+  <img src="docs/copilotmeter.png" alt="CopilotMeter logo" width="200">
+</p>
+
+<h1 align="center">CopilotMeter</h1>
 
 A tiny native macOS menu-bar app that tracks **how much you're actually using GitHub Copilot** — today / 7-day / 30-day breakdown, cache-hit rate, per-model split, and a USD cost estimate, all from a glance.
 
