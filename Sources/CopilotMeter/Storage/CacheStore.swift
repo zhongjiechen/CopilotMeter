@@ -70,6 +70,7 @@ public final class CacheStore {
             );
         """)
         try migrationV016SplitTranscriptAgent()
+        try migrationV017DedupeShutdownRows()
     }
 
     /// v0.1.6 migration: PR #11 ingested every transcript user.message as
@@ -118,6 +119,79 @@ public final class CacheStore {
         )
     }
 
+    /// v0.1.17 migration: the v0.1.16 AIU back-fill rescan re-ingested every
+    /// `session.shutdown` line, but the table's `UNIQUE(session_id, message_id,
+    /// kind, model)` constraint doesn't dedup rows where `message_id IS NULL`
+    /// (SQLite treats NULLs as distinct from each other for UNIQUE purposes).
+    /// As a result, finished sessions accumulated dozens or hundreds of
+    /// duplicate shutdown rows, multiplying their AIU contribution. This
+    /// migration:
+    ///   1. Collapses each (session, NULL message_id, kind, model) group to a
+    ///      single row, keeping the one with the largest `ai_credits_nano`
+    ///      (and falling back to the largest `output_tokens` for groups where
+    ///      AIU was never populated).
+    ///   2. Adds a partial unique index on `(session_id, kind, model)` for
+    ///      shutdown rows, which SQLite enforces correctly because the
+    ///      `WHERE` clause confines the index to rows where the de-facto PK is
+    ///      genuinely the triple (message_id is NULL by construction).
+    private func migrationV017DedupeShutdownRows() throws {
+        var already = false
+        try db.query("SELECT value FROM schema_meta WHERE key = ?",
+                     bindings: ["v017_dedup_shutdown"]) { row in
+            already = (row.string(0) ?? "") == "done"
+        }
+        if already { return }
+
+        // Phase 1: keep only the "winner" row per group. Tie-breaker order:
+        // (ai_credits_nano DESC NULLS LAST, output_tokens DESC, id ASC).
+        // Rationale: we want the row that has the most information; if AIU
+        // is set on any duplicate, that's the authoritative one and we keep
+        // it. Otherwise the version with the largest output_tokens (latest
+        // snapshot the session reached before it died) wins.
+        try db.execute("""
+            DELETE FROM records
+             WHERE kind = ? AND message_id IS NULL
+               AND id NOT IN (
+                 SELECT id FROM records r
+                  WHERE kind = ? AND message_id IS NULL
+                    AND id = (
+                      SELECT id FROM records r2
+                       WHERE r2.kind = ?
+                         AND r2.message_id IS NULL
+                         AND r2.session_id = r.session_id
+                         AND r2.model      = r.model
+                         AND IFNULL(r2.remote_name, '') = IFNULL(r.remote_name, '')
+                       ORDER BY (CASE WHEN r2.ai_credits_nano IS NULL THEN 0 ELSE 1 END) DESC,
+                                r2.ai_credits_nano DESC,
+                                r2.output_tokens DESC,
+                                r2.id ASC
+                       LIMIT 1
+                    )
+               )
+        """, bindings: [
+            RecordKind.shutdown.rawValue,
+            RecordKind.shutdown.rawValue,
+            RecordKind.shutdown.rawValue,
+        ])
+
+        // Phase 2: add a partial unique index so subsequent re-ingestion is
+        // genuinely idempotent. INSERT OR IGNORE inside insertRecord will
+        // honour this and never duplicate again. Limited to shutdown rows
+        // because chat rows (which also have NULL message_ids) are managed
+        // via clearChatRecords + bulk re-insert and intentionally allow
+        // multiple per session+model in some edge cases.
+        try db.exec("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_records_unique_shutdown
+                ON records(session_id, model, IFNULL(remote_name, ''))
+                WHERE kind = 'shutdown' AND message_id IS NULL;
+        """)
+
+        try db.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+            bindings: ["v017_dedup_shutdown", "done"]
+        )
+    }
+
     /// Returns true iff the named migration has been recorded as done.
     /// Used by `UsageRefresher` to also wipe out remote `offsets.json`
     /// caches on the same one-shot upgrade path.
@@ -128,6 +202,8 @@ public final class CacheStore {
         }
         return done
     }
+
+    /// Marks a migration / one-shot operation as done.
     public func markMigrationDone(_ key: String) {
         try? db.execute(
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
@@ -239,9 +315,10 @@ public final class CacheStore {
                    AND IFNULL(message_id, '') = IFNULL(?, '')
                    AND kind = ?
                    AND model = ?
+                   AND IFNULL(remote_name, '') = IFNULL(?, '')
                    AND (ai_credits_nano IS NULL OR ai_credits_nano < ?)
             """, bindings: [
-                aiu, r.sessionId, r.messageId, kind.rawValue, r.model, aiu,
+                aiu, r.sessionId, r.messageId, kind.rawValue, r.model, r.remoteName, aiu,
             ])
         }
     }

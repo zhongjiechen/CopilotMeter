@@ -501,11 +501,15 @@ enum RefreshWorker {
         let fm = FileManager.default
         guard fm.fileExists(atPath: dir.path) else { return }
 
-        // Which local session IDs still need AIU back-filled? When upgrading
-        // from a pre-AIU build, session.shutdown rows already on disk skipped
-        // ingest (offset >= size), so we must re-tail their files specifically
-        // to pick up `totalNanoAiu`. We force `resumeFrom = 0` for these.
-        let missingAiuSessions = Set((try? cache.localShutdownSessionsMissingAiu()) ?? [])
+        // One-shot AIU back-fill for sessions whose `session.shutdown` row
+        // was ingested by a pre-AIU build. We force a rescan-from-offset-0
+        // for these files exactly once per cache so we can pick up
+        // `totalNanoAiu`. After that, the regular incremental scan keeps up.
+        let aiuBackfillKey = "v017_aiu_backfill_done"
+        let aiuBackfillNeeded = !cache.migrationDone(aiuBackfillKey)
+        let missingAiuSessions: Set<String> = aiuBackfillNeeded
+            ? Set((try? cache.localShutdownSessionsMissingAiu()) ?? [])
+            : []
 
         let entries = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
         for sessionDir in entries {
@@ -591,6 +595,12 @@ enum RefreshWorker {
                 sessionEnded: parsed.sessionEnded || (state?.sessionEnded ?? false),
                 lastEventAt: parsed.lastEventAt ?? state?.lastEventAt
             )
+        }
+
+        // One-shot AIU back-fill done — flag it so future refreshes skip the
+        // expensive rescan-from-zero pass.
+        if aiuBackfillNeeded {
+            cache.markMigrationDone(aiuBackfillKey)
         }
     }
 
