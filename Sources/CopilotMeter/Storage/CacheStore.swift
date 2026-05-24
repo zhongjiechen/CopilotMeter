@@ -57,6 +57,12 @@ public final class CacheStore {
         try migrate(table: "file_state", addColumn: "remote_name", typeDecl: "TEXT")
         try db.exec("CREATE INDEX IF NOT EXISTS idx_records_remote ON records(remote_name);")
 
+        // Migration: ai_credits_nano column (nano-AIU; 1 AIU = 10^9 nano = $0.01).
+        // Stored as INTEGER (Int64); NULL when the source CLI version didn't
+        // emit totalNanoAiu so the aggregator can decide whether to fall back
+        // to a token-based estimate.
+        try migrate(table: "records", addColumn: "ai_credits_nano", typeDecl: "INTEGER")
+
         try db.exec("""
             CREATE TABLE IF NOT EXISTS schema_meta (
                 key TEXT PRIMARY KEY,
@@ -201,8 +207,9 @@ public final class CacheStore {
         try db.execute("""
             INSERT OR IGNORE INTO records
             (ts, session_id, message_id, source, model, output_tokens, input_tokens,
-             cache_read, cache_write, request_count, premium_cost, kind, remote_name)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             cache_read, cache_write, request_count, premium_cost, kind, remote_name,
+             ai_credits_nano)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, bindings: [
             r.timestamp.timeIntervalSince1970,
             r.sessionId,
@@ -216,8 +223,27 @@ public final class CacheStore {
             r.requestCount,
             r.premiumCost,
             kind.rawValue,
-            r.remoteName
+            r.remoteName,
+            r.aiCreditsNano,
         ])
+
+        // If the row already existed (e.g. inserted by an older build that
+        // didn't know about AIU) and we now have an authoritative AIU value,
+        // backfill it. Bounded UPDATE matches at most one row via the UNIQUE
+        // index and only writes when the existing column is NULL or smaller.
+        if let aiu = r.aiCreditsNano, aiu > 0 {
+            try db.execute("""
+                UPDATE records
+                   SET ai_credits_nano = ?
+                 WHERE session_id = ?
+                   AND IFNULL(message_id, '') = IFNULL(?, '')
+                   AND kind = ?
+                   AND model = ?
+                   AND (ai_credits_nano IS NULL OR ai_credits_nano < ?)
+            """, bindings: [
+                aiu, r.sessionId, r.messageId, kind.rawValue, r.model, aiu,
+            ])
+        }
     }
 
     /// Drop all chat rows so we can re-derive them from the source-of-truth VS Code
@@ -341,6 +367,54 @@ public final class CacheStore {
         }
     }
 
+    /// Updates the `ai_credits_nano` column on an existing shutdown row.
+    /// Used both during fresh ingestion (no-op if already set to same value)
+    /// and for one-shot back-fills after upgrading from a pre-AIU build.
+    /// Only overwrites NULL or smaller values to stay idempotent.
+    public func setAiCreditsNano(sessionId: String, remoteName: String?, model: String, nano: Int64) throws {
+        guard nano > 0 else { return }
+        if let name = remoteName {
+            try db.execute(
+                """
+                UPDATE records SET ai_credits_nano = ?
+                 WHERE session_id = ? AND remote_name = ?
+                   AND model = ? AND kind = ?
+                   AND (ai_credits_nano IS NULL OR ai_credits_nano < ?)
+                """,
+                bindings: [nano, sessionId, name, model, RecordKind.shutdown.rawValue, nano]
+            )
+        } else {
+            try db.execute(
+                """
+                UPDATE records SET ai_credits_nano = ?
+                 WHERE session_id = ? AND remote_name IS NULL
+                   AND model = ? AND kind = ?
+                   AND (ai_credits_nano IS NULL OR ai_credits_nano < ?)
+                """,
+                bindings: [nano, sessionId, model, RecordKind.shutdown.rawValue, nano]
+            )
+        }
+    }
+
+    /// Returns session_ids of local (remote_name IS NULL) shutdown rows that
+    /// don't yet have `ai_credits_nano` set. Used by the one-shot AIU
+    /// back-fill on app start when upgrading from a pre-AIU build.
+    public func localShutdownSessionsMissingAiu() throws -> [String] {
+        var ids: [String] = []
+        try db.query(
+            """
+            SELECT DISTINCT session_id FROM records
+             WHERE remote_name IS NULL
+               AND kind = ?
+               AND ai_credits_nano IS NULL
+            """,
+            bindings: [RecordKind.shutdown.rawValue]
+        ) { row in
+            if let sid = row.string(0) { ids.append(sid) }
+        }
+        return ids
+    }
+
     public func allRecords(since: Date? = nil) throws -> [UsageRecord] {
         var rows: [UsageRecord] = []
         let sql: String
@@ -349,7 +423,7 @@ public final class CacheStore {
             sql = """
                 SELECT ts, session_id, message_id, source, model,
                        output_tokens, input_tokens, cache_read, cache_write,
-                       request_count, premium_cost, remote_name
+                       request_count, premium_cost, remote_name, ai_credits_nano
                   FROM records WHERE ts >= ?
             """
             bindings = [since.timeIntervalSince1970]
@@ -357,7 +431,7 @@ public final class CacheStore {
             sql = """
                 SELECT ts, session_id, message_id, source, model,
                        output_tokens, input_tokens, cache_read, cache_write,
-                       request_count, premium_cost, remote_name
+                       request_count, premium_cost, remote_name, ai_credits_nano
                   FROM records
             """
             bindings = []
@@ -370,6 +444,7 @@ public final class CacheStore {
             let model = row.string(4) ?? "unknown"
             let cost: Double? = row.isNull(10) ? nil : row.double(10)
             let remote: String? = row.isNull(11) ? nil : row.string(11)
+            let aiuNano: Int64? = row.isNull(12) ? nil : row.int64(12)
             rows.append(UsageRecord(
                 timestamp: ts,
                 sessionId: sessionId,
@@ -382,6 +457,7 @@ public final class CacheStore {
                 cacheWriteTokens: row.int(8),
                 requestCount: row.double(9),
                 premiumCost: cost,
+                aiCreditsNano: aiuNano,
                 remoteName: remote
             ))
         }

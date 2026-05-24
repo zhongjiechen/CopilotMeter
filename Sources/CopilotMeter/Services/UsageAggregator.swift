@@ -5,6 +5,7 @@ public struct UsageAggregator: Sendable {
     public struct DailyPoint: Equatable, Sendable {
         public let date: Date
         public let requests: Double
+        public let aiCredits: Double
     }
 
     public struct Snapshot: Equatable, Sendable {
@@ -36,7 +37,8 @@ public struct UsageAggregator: Sendable {
         var byWindowBySource: [TimeWindow: [UsageRecord.Source: UsageStats]] = [:]
         var byWindowByRemote: [TimeWindow: [String?: UsageStats]] = [:]
         var blindChat: [TimeWindow: Int] = [:]
-        var dailyTotals: [Date: Double] = [:]
+        var dailyRequests: [Date: Double] = [:]
+        var dailyCredits: [Date: Double] = [:]
 
         for w in TimeWindow.allCases {
             byWindow[w] = UsageStats.zero
@@ -48,7 +50,16 @@ public struct UsageAggregator: Sendable {
 
         for r in records {
             let dayStart = calendar.startOfDay(for: r.timestamp)
-            dailyTotals[dayStart, default: 0] += r.requestCount
+            dailyRequests[dayStart, default: 0] += r.requestCount
+            // Per-record AI Credits: prefer the authoritative CLI value;
+            // fall back to PricingCatalog estimate (× 100, since 1 AIU = $0.01).
+            let perRecordCredits: Double
+            if let nano = r.aiCreditsNano {
+                perRecordCredits = Double(nano) / 1_000_000_000.0
+            } else {
+                perRecordCredits = PricingCatalog.estimatedCost(for: r) * 100.0
+            }
+            dailyCredits[dayStart, default: 0] += perRecordCredits
 
             // For per-model breakdown, prefix remote-hosted records with @host
             // so users can see at a glance which usage came from where.
@@ -69,7 +80,11 @@ public struct UsageAggregator: Sendable {
         var sparkline: [DailyPoint] = []
         for i in (0..<30).reversed() {
             if let d = calendar.date(byAdding: .day, value: -i, to: startOfToday) {
-                sparkline.append(DailyPoint(date: d, requests: dailyTotals[d, default: 0]))
+                sparkline.append(DailyPoint(
+                    date: d,
+                    requests: dailyRequests[d, default: 0],
+                    aiCredits: dailyCredits[d, default: 0]
+                ))
             }
         }
 

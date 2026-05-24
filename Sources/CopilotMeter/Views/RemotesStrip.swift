@@ -6,14 +6,14 @@ struct RemotesStrip: View {
     let window: TimeWindow
     let byRemote: [String?: UsageStats]
 
-    /// Non-nil keys, sorted by request count desc.
+    /// Non-nil keys, sorted by AI Credits desc.
     private var remotes: [(String, UsageStats)] {
         byRemote
             .compactMap { (key, value) -> (String, UsageStats)? in
-                guard let name = key, value.requests > 0 else { return nil }
+                guard let name = key, (value.aiCredits > 0 || value.requests > 0) else { return nil }
                 return (name, value)
             }
-            .sorted { $0.1.requests > $1.1.requests }
+            .sorted { $0.1.aiCredits > $1.1.aiCredits }
     }
 
     /// Whether any non-local activity exists at all (across all windows of the snapshot).
@@ -33,7 +33,7 @@ struct RemotesStrip: View {
                                 .foregroundStyle(.indigo)
                             Text("@\(name)")
                                 .font(.system(size: 11, weight: .medium))
-                            Text("\(Formatters.compactDouble(stats.requests))")
+                            Text(Formatters.compactCredits(stats.aiCredits))
                                 .font(.system(size: 11, weight: .semibold))
                                 .monospacedDigit()
                                 .foregroundStyle(.secondary)
@@ -43,7 +43,13 @@ struct RemotesStrip: View {
                         .background(
                             Capsule().fill(Color.indigo.opacity(0.12))
                         )
-                        .help("\(name): \(Int(stats.requests.rounded())) requests · \(Formatters.compactInt(stats.outputTokens)) out · \(Formatters.compactInt(stats.inputTokens)) in")
+                        .help("""
+                            \(name): \(Formatters.compactCredits(stats.aiCredits)) AI Credits \
+                            ≈ \(Formatters.compactUSD(stats.aiCreditsUsd)) · \
+                            \(Int(stats.requests.rounded())) req · \
+                            \(Formatters.compactInt(stats.outputTokens)) out · \
+                            \(Formatters.compactInt(stats.inputTokens)) in
+                            """)
                     }
                     Spacer()
                 }

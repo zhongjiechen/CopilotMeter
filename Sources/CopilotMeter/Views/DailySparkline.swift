@@ -1,22 +1,22 @@
 import SwiftUI
 
-/// Simple bar-spark for the last 30 days of premium request counts.
+/// Simple bar-spark for the last 30 days of AI Credits.
 struct DailySparkline: View {
     let data: [UsageAggregator.DailyPoint]   // chronological order, up to 30 points
 
     private var maxVal: Double {
-        max(data.map { $0.requests }.max() ?? 1, 1)
+        max(data.map { $0.aiCredits }.max() ?? 1, 1)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("LAST 30 DAYS")
+                Text("LAST 30 DAYS — AI CREDITS")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if let last = data.last, last.requests > 0 {
-                    Text("today: \(Formatters.compactDouble(last.requests))")
+                if let last = data.last, last.aiCredits > 0 {
+                    Text("today: \(Formatters.compactCredits(last.aiCredits))")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -26,10 +26,11 @@ struct DailySparkline: View {
                 let barWidth = max(2, (geo.size.width - CGFloat(count - 1) * 2) / CGFloat(count))
                 HStack(alignment: .bottom, spacing: 2) {
                     ForEach(Array(data.enumerated()), id: \.offset) { idx, point in
-                        let h = max(2, CGFloat(point.requests / maxVal) * geo.size.height)
+                        let h = max(2, CGFloat(point.aiCredits / maxVal) * geo.size.height)
                         RoundedRectangle(cornerRadius: 1.5)
                             .fill(barColor(for: idx))
                             .frame(width: barWidth, height: h)
+                            .help("\(point.date.formatted(date: .abbreviated, time: .omitted)): \(Formatters.compactCredits(point.aiCredits)) credits")
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

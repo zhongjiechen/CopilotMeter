@@ -37,6 +37,12 @@ public struct UsageRecord: Hashable, Codable, Sendable {
     public let requestCount: Double
     /// "Premium request cost" as recorded by Copilot, when available; nil for per-message records
     public let premiumCost: Double?
+    /// **GitHub AI Credits**, in nano-AIU (1 AIU = 10^9 nano-AIU = $0.01 USD).
+    /// Set when `session.shutdown.modelMetrics.<model>.totalNanoAiu` was present
+    /// (newer Copilot CLI builds, post 2026-06-01 billing). For records where
+    /// this is nil, callers should fall back to estimating from tokens via
+    /// `PricingCatalog`.
+    public let aiCreditsNano: Int64?
     /// Non-nil when this record was pulled from a remote host's
     /// ~/.copilot/session-state via SSH. The string is the user-chosen
     /// nickname from `remotes.json`.
@@ -54,6 +60,7 @@ public struct UsageRecord: Hashable, Codable, Sendable {
         cacheWriteTokens: Int,
         requestCount: Double,
         premiumCost: Double?,
+        aiCreditsNano: Int64? = nil,
         remoteName: String? = nil
     ) {
         self.timestamp = timestamp
@@ -67,6 +74,7 @@ public struct UsageRecord: Hashable, Codable, Sendable {
         self.cacheWriteTokens = cacheWriteTokens
         self.requestCount = requestCount
         self.premiumCost = premiumCost
+        self.aiCreditsNano = aiCreditsNano
         self.remoteName = remoteName
     }
 }

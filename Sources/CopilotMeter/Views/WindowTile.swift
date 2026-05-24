@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Compact tile: big request count, source split as a stacked bar.
+/// Compact tile: big AI-Credits number, USD subtitle, source split as a stacked bar.
 /// All token detail is deferred to the SelectedWindowDetail panel below the tiles,
 /// to keep tiles narrow and avoid clipping.
 struct WindowTile: View {
@@ -18,19 +18,32 @@ struct WindowTile: View {
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
 
-                Text(Formatters.compactDouble(stats.requests))
+                Text(Formatters.compactCredits(stats.aiCredits))
                     .font(.system(size: 24, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
 
                 HStack(spacing: 4) {
-                    Text("requests")
+                    Text("AI Credits")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 0)
+                    Text(Formatters.compactUSD(stats.aiCreditsUsd))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.green)
+                        .monospacedDigit()
+                        .help("USD equivalent at the post-2026-06-01 rate of $0.01 per AI Credit")
+                }
+
+                HStack(spacing: 4) {
+                    Text("\(Int(stats.requests.rounded())) req")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                    Spacer(minLength: 0)
                     if blindChat > 0 {
-                        Text("+\(blindChat)")
+                        Text("+\(blindChat) chat")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(UsageRecord.Source.vscodeChat.color)
                             .help("\(blindChat) VS Code Chat interactions with no token data")
@@ -56,7 +69,7 @@ struct WindowTile: View {
     }
 }
 
-/// Stacked horizontal bar showing the relative size of each source.
+/// Stacked horizontal bar showing the relative AI-Credit share of each source.
 private struct SourceSplitBar: View {
     let bySource: [UsageRecord.Source: UsageStats]
     let blindChat: Int
@@ -71,7 +84,7 @@ private struct SourceSplitBar: View {
                     RoundedRectangle(cornerRadius: 2)
                         .fill(seg.source.color)
                         .frame(width: w)
-                        .help("\(seg.source.shortLabel): \(Formatters.compactDouble(seg.value)) req")
+                        .help("\(seg.source.shortLabel): \(Formatters.compactCredits(seg.value)) credits")
                 }
                 if segments.isEmpty {
                     RoundedRectangle(cornerRadius: 2)
@@ -90,7 +103,12 @@ private struct SourceSplitBar: View {
     private func buildSegments() -> [Segment] {
         var out: [Segment] = []
         for src in [UsageRecord.Source.copilotCLI, .vscodeAgent, .vscodeChat] {
-            let v = (bySource[src]?.requests ?? 0)
+            // Width by credits when we have token data; fall back to request
+            // count for chat sessions (no token data → no credits) so the bar
+            // still reflects activity.
+            let credits = (bySource[src]?.aiCredits ?? 0)
+            let reqs = (bySource[src]?.requests ?? 0)
+            let v = credits > 0 ? credits : reqs
             if v > 0 { out.append(Segment(source: src, value: v)) }
         }
         return out

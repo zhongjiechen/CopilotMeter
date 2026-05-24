@@ -55,6 +55,16 @@ public struct UsageStats: Equatable, Sendable {
     /// PricingCatalog and the record's model. Tokens with unknown model
     /// contribute 0.
     public var estimatedRetailUsd: Double = 0
+    /// **GitHub AI Credits** consumed in this window. Built primarily from
+    /// the authoritative `totalNanoAiu` stamped onto session-shutdown rollup
+    /// rows by the newer CLI (since the 2026-06-01 billing change);
+    /// per-record token-based estimates fill in for rows from older CLIs
+    /// that didn't emit AIU. 1 AI Credit = $0.01 USD.
+    public var aiCredits: Double = 0
+    /// Number of records for which we used the authoritative `totalNanoAiu`
+    /// from the CLI vs. a token-based fallback. Used purely for diagnostics
+    /// / debug builds; not surfaced in the UI.
+    public var aiCreditsAuthoritativeRows: Int = 0
 
     public static let zero = UsageStats()
 
@@ -76,6 +86,9 @@ public struct UsageStats: Equatable, Sendable {
         PricingCatalog.githubOverageUsd(premiumCost: premiumCost)
     }
 
+    /// USD equivalent of `aiCredits` (1 AI Credit = $0.01).
+    public var aiCreditsUsd: Double { aiCredits * 0.01 }
+
     public mutating func add(_ r: UsageRecord) {
         requests += r.requestCount
         outputTokens += r.outputTokens
@@ -83,6 +96,16 @@ public struct UsageStats: Equatable, Sendable {
         cacheReadTokens += r.cacheReadTokens
         cacheWriteTokens += r.cacheWriteTokens
         if let c = r.premiumCost { premiumCost += c }
-        estimatedRetailUsd += PricingCatalog.estimatedCost(for: r)
+        let est = PricingCatalog.estimatedCost(for: r)
+        estimatedRetailUsd += est
+        // Prefer the authoritative AIU from the CLI when present; otherwise
+        // back-fill from the token-based estimate (1 AIU = $0.01 USD, so
+        // est USD × 100 = AIU).
+        if let nano = r.aiCreditsNano {
+            aiCredits += Double(nano) / 1_000_000_000.0
+            aiCreditsAuthoritativeRows += 1
+        } else {
+            aiCredits += est * 100.0
+        }
     }
 }

@@ -72,23 +72,24 @@ private struct MenuBarLabel: View {
     var body: some View {
         let today = refresher.snapshot.byWindow[.today] ?? .zero
         let chat = refresher.snapshot.blindChatByWindow[.today] ?? 0
-        let total = Int(today.requests.rounded()) + chat
+        let totalCredits = today.aiCredits
+        let totalUsd = today.aiCreditsUsd
+        let totalRequests = Int(today.requests.rounded()) + chat
         let byRemote = refresher.snapshot.byWindowByRemote[.today] ?? [:]
-        let localCount = Int((byRemote[nil]?.requests ?? 0).rounded()) + chat
-        let remoteEntries: [(String, Int)] = byRemote
-            .compactMap { (key, value) -> (String, Int)? in
+        let localCredits = byRemote[nil]?.aiCredits ?? 0
+        let remoteEntries: [(String, Double)] = byRemote
+            .compactMap { (key, value) -> (String, Double)? in
                 guard let name = key else { return nil }
-                let count = Int(value.requests.rounded())
-                return count > 0 ? (name, count) : nil
+                return value.aiCredits > 0 ? (name, value.aiCredits) : nil
             }
             .sorted { $0.1 > $1.1 }
         let breakdownText = remoteEntries.isEmpty ? nil : Self.breakdownString(
-            localCount: localCount, remotes: remoteEntries
+            localCredits: localCredits, remotes: remoteEntries
         )
 
         HStack(spacing: 4) {
             ZStack(alignment: .topTrailing) {
-                Image(systemName: total > 0 ? "chart.bar.fill" : "chart.bar")
+                Image(systemName: totalCredits > 0 ? "chart.bar.fill" : "chart.bar")
                 if updates.hasUpdate {
                     Circle()
                         .fill(Color.orange)
@@ -96,10 +97,11 @@ private struct MenuBarLabel: View {
                         .offset(x: 2, y: -1)
                 }
             }
-            // Always show the daily total first as the prominent number, so it
-            // matches the popover's Today tile at a glance. When remotes are
-            // configured, append a compact breakdown in a secondary style.
-            Text(total > 0 ? "\(total)" : "—")
+            // Primary number is **AI Credits used today** — the same unit
+            // GitHub uses on the side panel of the Copilot CLI since the
+            // 2026-06-01 billing change. Breakdown chip (when there are
+            // remotes) reuses the AIU split per host.
+            Text(totalCredits > 0 ? Formatters.compactCredits(totalCredits) : "—")
                 .monospacedDigit()
                 .font(.system(size: 12, weight: .semibold))
             if let breakdownText {
@@ -109,19 +111,23 @@ private struct MenuBarLabel: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .help(tooltip(localCount: localCount, remotes: remoteEntries, total: total))
+        .help(tooltip(
+            credits: totalCredits, usd: totalUsd, requests: totalRequests,
+            localCredits: localCredits, remotes: remoteEntries
+        ))
     }
 
-    /// Builds the compact "(L:73 host:426)" suffix shown after the total when
-    /// remotes are configured. Up to 2 remote chips; any extra hosts collapse
+    /// Builds the compact "(L:12 host:30)" suffix shown after the credit total
+    /// when remotes are configured. Each chip is an AI-Credit count rounded
+    /// to the nearest unit. Up to 2 remote chips; any extra hosts collapse
     /// into a "+N" marker so the menu bar stays narrow.
-    private static func breakdownString(localCount: Int, remotes: [(String, Int)]) -> String {
+    private static func breakdownString(localCredits: Double, remotes: [(String, Double)]) -> String {
         let visible = Array(remotes.prefix(2))
         let hidden = remotes.count - visible.count
-        var parts: [String] = ["L:\(localCount)"]
-        for (name, count) in visible {
+        var parts: [String] = ["L:\(Formatters.compactCredits(localCredits))"]
+        for (name, c) in visible {
             let short = name.count > 6 ? String(name.prefix(5)) + "…" : name
-            parts.append("\(short):\(count)")
+            parts.append("\(short):\(Formatters.compactCredits(c))")
         }
         if hidden > 0 {
             parts.append("+\(hidden)")
@@ -129,11 +135,15 @@ private struct MenuBarLabel: View {
         return "(" + parts.joined(separator: " ") + ")"
     }
 
-    private func tooltip(localCount: Int, remotes: [(String, Int)], total: Int) -> String {
-        var lines: [String] = ["Today: \(total) requests"]
-        lines.append("• Local: \(localCount)")
-        for (name, count) in remotes {
-            lines.append("• \(name): \(count)")
+    private func tooltip(credits: Double, usd: Double, requests: Int,
+                         localCredits: Double, remotes: [(String, Double)]) -> String {
+        var lines: [String] = [
+            "Today: \(Formatters.compactCredits(credits)) AI Credits  ≈ \(Formatters.compactUSD(usd))",
+            "\(requests) requests",
+            "• Local: \(Formatters.compactCredits(localCredits))",
+        ]
+        for (name, c) in remotes {
+            lines.append("• \(name): \(Formatters.compactCredits(c))")
         }
         return lines.joined(separator: "\n")
     }

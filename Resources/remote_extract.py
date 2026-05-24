@@ -27,7 +27,11 @@ Output format (one JSON object per line):
   {"sid": "...", "ts": "...", "t": "m", "model": "...",
    "mid": "...", "out": 200}                            # assistant.message
   {"sid": "...", "ts": "...", "t": "s", "model": "...",
-   "in": 1234, "cr": 567, "cw": 0, "cost": 1.0}         # session.shutdown rollup
+   "in": 1234, "cr": 567, "cw": 0, "cost": 1.0,
+   "aiu": 49014850000}                                  # session.shutdown rollup
+                                                        # ("aiu" = totalNanoAiu, GitHub's
+                                                        # native billing unit since 2026-06-01;
+                                                        # 1 AIU = 10^9 nano-AIU = $0.01 USD)
   {"sid": "...", "ts": "...", "t": "init",
    "sm": "claude-opus-4.7"}                             # session.start
   {"sid": "...", "t": "end"}                            # session.shutdown seen
@@ -169,6 +173,17 @@ def process_file(path: str, sid: str, start_offset: int) -> int:
                 if cost_val is not None:
                     try:
                         row["cost"] = float(cost_val)
+                    except (TypeError, ValueError):
+                        pass
+                # totalNanoAiu is GitHub's authoritative AI-Credit value
+                # for the model in this session (1 AIU = 10^9 nano-AIU =
+                # $0.01 USD post-2026-06-01). Only emitted by newer CLI
+                # builds; older builds force the host to estimate from
+                # tokens × per-million-token rates.
+                aiu_val = m.get("totalNanoAiu")
+                if aiu_val is not None:
+                    try:
+                        row["aiu"] = int(aiu_val)
                     except (TypeError, ValueError):
                         pass
                 emit(row)

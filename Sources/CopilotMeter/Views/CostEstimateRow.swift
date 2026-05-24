@@ -12,8 +12,9 @@ struct CostEstimateRow: View {
 
     var body: some View {
         let gh = stats.githubOverageUsd
+        let aiu = stats.aiCreditsUsd
         let retail = stats.estimatedRetailUsd
-        if gh == 0 && retail == 0 { EmptyView() } else {
+        if gh == 0 && aiu == 0 && retail == 0 { EmptyView() } else {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Image(systemName: "dollarsign.circle.fill")
@@ -35,6 +36,17 @@ struct CostEstimateRow: View {
                         CostFormulaPopover()
                     }
                     Spacer()
+                    if stats.aiCreditsAuthoritativeRows > 0 {
+                        Text("AIU ✓")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.green)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(
+                                Capsule().fill(Color.green.opacity(0.12))
+                            )
+                            .help("\(stats.aiCreditsAuthoritativeRows) row(s) carry authoritative `totalNanoAiu` from the Copilot CLI.")
+                    }
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     costCell(
@@ -49,14 +61,25 @@ struct CostEstimateRow: View {
                     )
                     costCell(
                         label: "AI Credits",
-                        value: retail,
+                        value: aiu > 0 ? aiu : retail,
                         help: """
-                            GitHub's official 2026 usage-based bill. Each model's input / output / cache_read \
-                            tokens are charged at the per-million rate published at \
-                            docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing. \
-                            1 AI Credit = $0.01 USD, so the USD figure shown here is exactly the AI-Credits cost.
+                            GitHub's official 2026-06-01 usage-based bill. When the Copilot CLI emits \
+                            `session.shutdown.modelMetrics.<model>.totalNanoAiu` we read it directly \
+                            (authoritative). Otherwise we fall back to a per-token estimate using the \
+                            rates published at docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing. \
+                            1 AI Credit = $0.01 USD, so the USD figure shown here equals the credits count × $0.01.
                             """
                     )
+                }
+                if aiu > 0 {
+                    HStack(spacing: 4) {
+                        Text("\(Formatters.compactCredits(stats.aiCredits)) AI Credits")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                        Spacer()
+                    }
+                    .padding(.horizontal, 8)
                 }
             }
         }
@@ -130,11 +153,20 @@ private struct CostFormulaPopover: View {
                     icon: "shippingbox.fill",
                     accent: .blue
                 ) {
+                    Text("**Authoritative path.** When the Copilot CLI writes `session.shutdown.modelMetrics.<model>.totalNanoAiu` we read it directly: AIU = totalNanoAiu ÷ 10⁹, USD = AIU × $0.01.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+
+                    Text("**Fallback path** (older CLI sessions / VS Code Chat without AIU in the rollup):")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
                     formula("fresh = max(0, input − cache_read − cache_write)")
                     formula("cost  = fresh        × in_rate")
                     formula("      + cache_read   × cache_read_rate")
                     formula("      + cache_write  × cache_write_rate   (Anthropic)")
                     formula("      + output       × out_rate")
+                    formula("AIU = cost × 100        (since 1 AIU = $0.01)")
 
                     Text("Per-million-token rates from GitHub Docs (2026-05):")
                         .font(.caption2)

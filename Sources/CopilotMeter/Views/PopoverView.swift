@@ -84,11 +84,12 @@ struct PopoverView: View {
                     .help(err)
             } else {
                 let all = refresher.snapshot.byWindow[.all] ?? .zero
-                Text("All-time: \(Formatters.compactDouble(all.requests)) req · \(Formatters.compactInt(all.outputTokens)) out")
+                Text("All-time: \(Formatters.compactCredits(all.aiCredits)) cr · \(Formatters.compactUSD(all.aiCreditsUsd)) · \(Formatters.compactDouble(all.requests)) req")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help("All-time AI Credits / USD / request count across local + remote sources.")
             }
             Spacer()
             Button {

@@ -448,14 +448,16 @@ enum RefreshWorker {
                 )
                 try cache.insertRecord(rec, kind: .message)
 
-            case .sessionShutdownRow(let sid, let ts, let model, let input, let cr, let cw, let cost):
-                if input == 0 && cr == 0 && cw == 0 && cost == nil { continue }
+            case .sessionShutdownRow(let sid, let ts, let model, let input, let cr, let cw, let cost, let aiuNano):
+                if input == 0 && cr == 0 && cw == 0 && cost == nil && aiuNano == nil { continue }
                 let rec = UsageRecord(
                     timestamp: ts, sessionId: sid, messageId: nil,
                     source: classify(sid), model: model,
                     outputTokens: 0,
                     inputTokens: input, cacheReadTokens: cr, cacheWriteTokens: cw,
-                    requestCount: 0, premiumCost: cost, remoteName: remoteName
+                    requestCount: 0, premiumCost: cost,
+                    aiCreditsNano: aiuNano,
+                    remoteName: remoteName
                 )
                 try cache.insertRecord(rec, kind: .shutdown)
 
@@ -499,6 +501,12 @@ enum RefreshWorker {
         let fm = FileManager.default
         guard fm.fileExists(atPath: dir.path) else { return }
 
+        // Which local session IDs still need AIU back-filled? When upgrading
+        // from a pre-AIU build, session.shutdown rows already on disk skipped
+        // ingest (offset >= size), so we must re-tail their files specifically
+        // to pick up `totalNanoAiu`. We force `resumeFrom = 0` for these.
+        let missingAiuSessions = Set((try? cache.localShutdownSessionsMissingAiu()) ?? [])
+
         let entries = (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
         for sessionDir in entries {
             var isDir: ObjCBool = false
@@ -507,21 +515,26 @@ enum RefreshWorker {
             guard fm.fileExists(atPath: eventsFile.path) else { continue }
 
             let state = try cache.fileState(filePath: eventsFile.path)
+            let sessionId = sessionDir.lastPathComponent
+            let needsAiuBackfill = missingAiuSessions.contains(sessionId)
 
-            if let s = state, s.sessionEnded,
+            if let s = state, s.sessionEnded, !needsAiuBackfill,
                let attrs = try? fm.attributesOfItem(atPath: eventsFile.path),
                let size = (attrs[.size] as? NSNumber)?.int64Value,
                s.byteOffset >= size {
                 continue
             }
 
-            let sessionId = sessionDir.lastPathComponent
             // Initial guess: if the session ID appears in the local VS Code
             // Chat DB, it's an agent-mode VS Code session; otherwise CLI.
             // hostType (parsed below) may override this.
             let initialSource: UsageRecord.Source = vsCodeIds.contains(sessionId) ? .vscodeAgent : .copilotCLI
 
-            var resumeFrom = state?.byteOffset ?? 0
+            // When back-filling AIU for an already-finished session, parse the
+            // file from offset 0 so the session.shutdown line is re-seen. The
+            // INSERT OR IGNORE + UPDATE-when-larger logic in `insertRecord`
+            // makes the rescan idempotent for all other rows.
+            var resumeFrom = needsAiuBackfill ? 0 : (state?.byteOffset ?? 0)
             if let attrs = try? fm.attributesOfItem(atPath: eventsFile.path),
                let size = (attrs[.size] as? NSNumber)?.int64Value,
                resumeFrom > size {
@@ -564,6 +577,7 @@ enum RefreshWorker {
                         cacheWriteTokens: r.cacheWriteTokens,
                         requestCount: r.requestCount,
                         premiumCost: r.premiumCost,
+                        aiCreditsNano: r.aiCreditsNano,
                         remoteName: r.remoteName
                     )
                 }

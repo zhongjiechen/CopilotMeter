@@ -7,8 +7,9 @@ struct ModelBreakdown: View {
 
     private var topModels: [(String, UsageStats)] {
         byModel
-            .filter { $0.value.requests > 0 || $0.value.outputTokens > 0 }
+            .filter { $0.value.aiCredits > 0 || $0.value.requests > 0 || $0.value.outputTokens > 0 }
             .sorted {
+                if $0.value.aiCredits != $1.value.aiCredits { return $0.value.aiCredits > $1.value.aiCredits }
                 if $0.value.requests != $1.value.requests { return $0.value.requests > $1.value.requests }
                 return $0.value.outputTokens > $1.value.outputTokens
             }
@@ -16,8 +17,8 @@ struct ModelBreakdown: View {
             .map { ($0.key, $0.value) }
     }
 
-    private var maxRequests: Double {
-        max(topModels.map(\.1.requests).max() ?? 1, 1)
+    private var maxCredits: Double {
+        max(topModels.map(\.1.aiCredits).max() ?? 1, 1)
     }
 
     var body: some View {
@@ -40,7 +41,7 @@ struct ModelBreakdown: View {
                     .padding(.vertical, 4)
             } else {
                 ForEach(topModels, id: \.0) { name, stats in
-                    ModelRow(name: name, stats: stats, fraction: stats.requests / maxRequests)
+                    ModelRow(name: name, stats: stats, fraction: stats.aiCredits / maxCredits)
                 }
             }
         }
@@ -61,10 +62,11 @@ private struct ModelRow: View {
                     .truncationMode(.middle)
                     .help(name)
                 Spacer(minLength: 8)
-                Text("\(Formatters.compactDouble(stats.requests)) req")
+                Text("\(Formatters.compactCredits(stats.aiCredits)) cr")
                     .font(.system(size: 11, weight: .semibold))
                     .monospacedDigit()
                     .foregroundStyle(.primary)
+                    .help("AI Credits ≈ \(Formatters.compactUSD(stats.aiCreditsUsd))")
             }
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
@@ -112,6 +114,9 @@ private struct FlowingMetrics: View {
 
     private func composedParts() -> [String] {
         var parts: [String] = []
+        if stats.requests > 0 {
+            parts.append("\(Int(stats.requests.rounded())) req")
+        }
         if stats.outputTokens > 0 {
             parts.append("\(Formatters.compactInt(stats.outputTokens)) out")
         }
@@ -121,8 +126,8 @@ private struct FlowingMetrics: View {
         if let rate = stats.cacheHitRate, stats.cacheReadTokens > 0 {
             parts.append(String(format: "%.0f%% cached", rate * 100))
         }
-        if stats.premiumCost > 0 {
-            parts.append(String(format: "≈%.1f prem", stats.premiumCost))
+        if stats.aiCreditsUsd > 0 {
+            parts.append("≈\(Formatters.compactUSD(stats.aiCreditsUsd))")
         }
         return parts
     }

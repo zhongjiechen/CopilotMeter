@@ -66,7 +66,7 @@ public enum RemoteSSHExtractor {
     public enum ExtractedEvent {
         case sessionInfo(sid: String, ts: Date, selectedModel: String?, hostType: String?)
         case assistantMessage(sid: String, ts: Date, model: String?, messageId: String?, outputTokens: Int)
-        case sessionShutdownRow(sid: String, ts: Date, model: String, inputTokens: Int, cacheRead: Int, cacheWrite: Int, premiumCost: Double?)
+        case sessionShutdownRow(sid: String, ts: Date, model: String, inputTokens: Int, cacheRead: Int, cacheWrite: Int, premiumCost: Double?, aiCreditsNano: Int64?)
         case sessionEnded(sid: String)
         /// One VS Code Chat user.message turn from a workspaceStorage transcript.
         /// `sessionId` is the chat session UUID (filename of the .jsonl);
@@ -272,6 +272,20 @@ public enum RemoteSSHExtractor {
                 ))
             case "s":
                 guard let model = obj["model"] as? String else { continue }
+                // `aiu` is the model's totalNanoAiu (nano-AIU integer).
+                // Only present on session.shutdown rollups emitted by
+                // newer Copilot CLI builds. Decode as Int64 so we don't
+                // lose precision on big sessions (>2^31 nano-AIU).
+                let aiuNano: Int64?
+                if let n = obj["aiu"] as? Int64 {
+                    aiuNano = n
+                } else if let n = obj["aiu"] as? Int {
+                    aiuNano = Int64(n)
+                } else if let d = obj["aiu"] as? Double {
+                    aiuNano = Int64(d)
+                } else {
+                    aiuNano = nil
+                }
                 out.append(.sessionShutdownRow(
                     sid: sid,
                     ts: parseTimestamp(obj["ts"] as? String),
@@ -279,7 +293,8 @@ public enum RemoteSSHExtractor {
                     inputTokens: (obj["in"] as? Int) ?? 0,
                     cacheRead: (obj["cr"] as? Int) ?? 0,
                     cacheWrite: (obj["cw"] as? Int) ?? 0,
-                    premiumCost: (obj["cost"] as? Double)
+                    premiumCost: (obj["cost"] as? Double),
+                    aiCreditsNano: aiuNano
                 ))
             case "end":
                 out.append(.sessionEnded(sid: sid))

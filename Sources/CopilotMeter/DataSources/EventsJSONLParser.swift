@@ -195,7 +195,21 @@ public final class EventsJSONLParser {
                 let cacheRead = (usage["cacheReadTokens"] as? Int) ?? 0
                 let cacheWrite = (usage["cacheWriteTokens"] as? Int) ?? 0
                 let cost = (requests["cost"] as? Double) ?? Double((requests["cost"] as? Int) ?? 0)
-                if input == 0 && cacheRead == 0 && cacheWrite == 0 && cost == 0 { continue }
+                // GitHub's authoritative AI-Credit value (nano-AIU, 1 AIU
+                // = $0.01 USD post-2026-06-01). Only present on newer CLI
+                // builds; absent rollups still get a token-based estimate
+                // downstream via PricingCatalog.
+                let aiuNano: Int64?
+                if let n = m["totalNanoAiu"] as? Int64 {
+                    aiuNano = n
+                } else if let n = m["totalNanoAiu"] as? Int {
+                    aiuNano = Int64(n)
+                } else if let d = m["totalNanoAiu"] as? Double {
+                    aiuNano = Int64(d)
+                } else {
+                    aiuNano = nil
+                }
+                if input == 0 && cacheRead == 0 && cacheWrite == 0 && cost == 0 && aiuNano == nil { continue }
                 rows.append(UsageRecord(
                     timestamp: ts,
                     sessionId: sessionId,
@@ -208,6 +222,7 @@ public final class EventsJSONLParser {
                     cacheWriteTokens: cacheWrite,
                     requestCount: 0,
                     premiumCost: cost,
+                    aiCreditsNano: aiuNano,
                     remoteName: remoteName
                 ))
             }
