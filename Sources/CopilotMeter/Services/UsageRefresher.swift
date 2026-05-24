@@ -421,6 +421,14 @@ enum RefreshWorker {
             }
         }
 
+        // Backfill: for sessions whose selectedModel we now know, sweep any
+        // previously-ingested "unknown" message rows for that session. This
+        // recovers history once Python re-emits init for sessions whose
+        // session.start was already past the resume offset.
+        for (sid, model) in sessionModel {
+            try cache.backfillUnknownModel(sessionId: sid, remoteName: remoteName, model: model)
+        }
+
         func classify(_ sid: String) -> UsageRecord.Source {
             if sessionHostType[sid] == "github" { return .codingAgent }
             if remoteVsCodeIds.contains(sid) { return .vscodeAgent }
@@ -530,6 +538,14 @@ enum RefreshWorker {
             // hostType=github → this is a GitHub Copilot Cloud Agent session
             // (cloud-dispatched, e.g. via /delegate). Override the source.
             let finalSource: UsageRecord.Source = (parsed.hostType == "github") ? .codingAgent : initialSource
+
+            // Backfill: if we now know this session's selectedModel, sweep any
+            // previously-ingested "unknown" message rows for it. This recovers
+            // history for sessions whose session.start sits before the resume
+            // offset (and whose per-message events don't include `model`).
+            if let sm = parsed.selectedModel, !sm.isEmpty {
+                try cache.backfillUnknownModel(sessionId: parsed.sessionId, remoteName: remoteName, model: sm)
+            }
 
             for r in parsed.records {
                 let record: UsageRecord

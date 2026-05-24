@@ -312,6 +312,35 @@ public final class CacheStore {
         }
     }
 
+    /// Retroactively fills in the model column for records that came in with
+    /// `model="unknown"` because the per-message event didn't include `model`
+    /// and we hadn't yet observed the session.start (e.g., older CLI builds,
+    /// or a sync that resumed past offset 0). Scoped to message-kind rows so
+    /// shutdown-roll-up rows (which already have a model from `modelMetrics`)
+    /// are untouched.
+    public func backfillUnknownModel(sessionId: String, remoteName: String?, model: String) throws {
+        guard !model.isEmpty, model != "unknown" else { return }
+        if let name = remoteName {
+            try db.execute(
+                """
+                UPDATE records SET model = ?
+                 WHERE session_id = ? AND remote_name = ?
+                   AND kind = ? AND model = 'unknown'
+                """,
+                bindings: [model, sessionId, name, RecordKind.message.rawValue]
+            )
+        } else {
+            try db.execute(
+                """
+                UPDATE records SET model = ?
+                 WHERE session_id = ? AND remote_name IS NULL
+                   AND kind = ? AND model = 'unknown'
+                """,
+                bindings: [model, sessionId, RecordKind.message.rawValue]
+            )
+        }
+    }
+
     public func allRecords(since: Date? = nil) throws -> [UsageRecord] {
         var rows: [UsageRecord] = []
         let sql: String

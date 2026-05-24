@@ -82,6 +82,9 @@ private struct MenuBarLabel: View {
                 return count > 0 ? (name, count) : nil
             }
             .sorted { $0.1 > $1.1 }
+        let breakdownText = remoteEntries.isEmpty ? nil : Self.breakdownString(
+            localCount: localCount, remotes: remoteEntries
+        )
 
         HStack(spacing: 4) {
             ZStack(alignment: .topTrailing) {
@@ -93,41 +96,37 @@ private struct MenuBarLabel: View {
                         .offset(x: 2, y: -1)
                 }
             }
-            // If user has remotes enabled, show local + remote chips + total.
-            // Otherwise just the total to keep the menu bar tidy.
-            if remoteEntries.isEmpty {
-                Text(total > 0 ? "\(total)" : "—")
+            // Always show the daily total first as the prominent number, so it
+            // matches the popover's Today tile at a glance. When remotes are
+            // configured, append a compact breakdown in a secondary style.
+            Text(total > 0 ? "\(total)" : "—")
+                .monospacedDigit()
+                .font(.system(size: 12, weight: .semibold))
+            if let breakdownText {
+                Text(breakdownText)
                     .monospacedDigit()
-                    .font(.system(size: 12, weight: .semibold))
-            } else {
-                let visible = Array(remoteEntries.prefix(2))
-                let hiddenCount = remoteEntries.count - visible.count
-                Text("L:\(localCount)")
-                    .monospacedDigit()
-                    .font(.system(size: 12, weight: .semibold))
-                ForEach(visible, id: \.0) { (name, count) in
-                    Text("·\(shortName(name)):\(count)")
-                        .monospacedDigit()
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                if hiddenCount > 0 {
-                    Text("+\(hiddenCount)")
-                        .monospacedDigit()
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.tertiary)
-                }
-                Text("=\(total)")
-                    .monospacedDigit()
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(.secondary)
             }
         }
         .help(tooltip(localCount: localCount, remotes: remoteEntries, total: total))
     }
 
-    /// Truncate long host names so the menu bar stays compact.
-    private func shortName(_ name: String) -> String {
-        name.count > 6 ? String(name.prefix(5)) + "…" : name
+    /// Builds the compact "(L:73 host:426)" suffix shown after the total when
+    /// remotes are configured. Up to 2 remote chips; any extra hosts collapse
+    /// into a "+N" marker so the menu bar stays narrow.
+    private static func breakdownString(localCount: Int, remotes: [(String, Int)]) -> String {
+        let visible = Array(remotes.prefix(2))
+        let hidden = remotes.count - visible.count
+        var parts: [String] = ["L:\(localCount)"]
+        for (name, count) in visible {
+            let short = name.count > 6 ? String(name.prefix(5)) + "…" : name
+            parts.append("\(short):\(count)")
+        }
+        if hidden > 0 {
+            parts.append("+\(hidden)")
+        }
+        return "(" + parts.joined(separator: " ") + ")"
     }
 
     private func tooltip(localCount: Int, remotes: [(String, Int)], total: Int) -> String {

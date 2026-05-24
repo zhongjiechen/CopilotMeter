@@ -63,6 +63,42 @@ def emit(obj):
     sys.stdout.write("\n")
 
 
+def emit_session_init(path: str, sid: str) -> None:
+    """Reads only the FIRST line of an events.jsonl file and re-emits the
+    `session.start` metadata as an init event. This is intentionally
+    independent of the resume offset so that long-running sessions whose
+    session.start sits before the offset still get their `selectedModel`
+    propagated to the host on every sync — without that, older CLI versions
+    (which don't include `model` on each assistant.message) leave records
+    stuck at model="unknown" forever.
+    """
+    try:
+        with open(path, "rb") as f:
+            first = f.readline()
+    except OSError:
+        return
+    if not first:
+        return
+    try:
+        evt = json.loads(first)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return
+    if not isinstance(evt, dict) or evt.get("type") != "session.start":
+        return
+    ts = evt.get("timestamp")
+    d = evt.get("data") or {}
+    sm = d.get("selectedModel")
+    host_type = (d.get("context") or {}).get("hostType")
+    if not (sm or host_type):
+        return
+    obj_out = {"sid": sid, "ts": ts, "t": "init"}
+    if sm:
+        obj_out["sm"] = sm
+    if host_type:
+        obj_out["ht"] = host_type
+    emit(obj_out)
+
+
 def process_file(path: str, sid: str, start_offset: int) -> int:
     """Reads `path` from byte offset `start_offset`. Returns the byte offset
     after the last complete line consumed (so the caller can resume cleanly
@@ -217,6 +253,10 @@ def main():
     if os.path.isdir(base):
         for events_path in sorted(glob(os.path.join(base, "*", "events.jsonl"))):
             sid = os.path.basename(os.path.dirname(events_path))
+            # Always re-emit session.start metadata first so the host can
+            # backfill selectedModel even when the resume offset is past
+            # the session.start line. Cheap (reads only the first line).
+            emit_session_init(events_path, sid)
             start = int(offsets.get(sid, 0))
             new_off = process_file(events_path, sid, start)
             emit({"sid": sid, "off": new_off})

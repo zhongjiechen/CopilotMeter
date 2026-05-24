@@ -24,6 +24,10 @@ public final class EventsJSONLParser {
         /// `context.hostType` from session.start, when present. Used by the
         /// caller to classify the session source as Cloud Agent vs CLI etc.
         public let hostType: String?
+        /// `selectedModel` from session.start, when present. The caller uses
+        /// this to backfill records that previously decoded with model="unknown"
+        /// (older CLI builds didn't include `model` on per-message events).
+        public let selectedModel: String?
     }
 
     private static let iso8601: ISO8601DateFormatter = {
@@ -47,20 +51,41 @@ public final class EventsJSONLParser {
     public func parse(file: URL, fromByteOffset: Int64 = 0, source: UsageRecord.Source, remoteName: String? = nil) throws -> ParseResult {
         let sessionId = file.deletingLastPathComponent().lastPathComponent
         guard let handle = try? FileHandle(forReadingFrom: file) else {
-            return ParseResult(records: [], lastByteOffset: fromByteOffset, sessionId: sessionId, lastEventAt: nil, sessionEnded: false, hostType: nil)
+            return ParseResult(records: [], lastByteOffset: fromByteOffset, sessionId: sessionId, lastEventAt: nil, sessionEnded: false, hostType: nil, selectedModel: nil)
         }
         defer { try? handle.close() }
 
-        try handle.seek(toOffset: UInt64(max(0, fromByteOffset)))
-        let data = (try? handle.readToEnd()) ?? Data()
-
-        var records: [UsageRecord] = []
         var lastEventAt: Date?
         var sessionEnded = false
         // Track the session's selected model so we can fill in records where the
         // per-message event omits "model" (older event-log format).
         var sessionModel: String?
         var hostType: String?
+
+        // Always read line 1 to recover session.start metadata (selectedModel,
+        // hostType). For resumed parses (fromByteOffset > 0) the session.start
+        // sits before the offset, so without this we'd lose its metadata and
+        // every new assistant.message would resolve to model="unknown". Cheap.
+        if fromByteOffset > 0 {
+            try handle.seek(toOffset: 0)
+            if let firstLine = readSingleLine(from: handle),
+               let parsed = try? JSONSerialization.jsonObject(with: firstLine) as? [String: Any] {
+                _ = handleEvent(
+                    parsed,
+                    sessionId: sessionId,
+                    source: source,
+                    remoteName: remoteName,
+                    sessionModel: &sessionModel,
+                    hostType: &hostType,
+                    lastEventAt: &lastEventAt
+                )
+            }
+        }
+
+        try handle.seek(toOffset: UInt64(max(0, fromByteOffset)))
+        let data = (try? handle.readToEnd()) ?? Data()
+
+        var records: [UsageRecord] = []
 
         // Split on newlines; tolerate a trailing partial line (don't advance past it).
         var consumedBytesInChunk: Int64 = 0
@@ -88,8 +113,19 @@ public final class EventsJSONLParser {
             sessionId: sessionId,
             lastEventAt: lastEventAt,
             sessionEnded: sessionEnded,
-            hostType: hostType
+            hostType: hostType,
+            selectedModel: sessionModel
         )
+    }
+
+    /// Reads bytes from the current offset of `handle` until the first `\n`,
+    /// returning the line (excluding the newline). Returns nil on read failure
+    /// or empty file.
+    private func readSingleLine(from handle: FileHandle) -> Data? {
+        // events.jsonl session.start lines are < 2KB in practice.
+        let chunk = (try? handle.read(upToCount: 4096)) ?? Data()
+        guard let nlIndex = chunk.firstIndex(of: 0x0A) else { return nil }
+        return chunk.subdata(in: chunk.startIndex..<nlIndex)
     }
 
     private struct EventOutcome {
