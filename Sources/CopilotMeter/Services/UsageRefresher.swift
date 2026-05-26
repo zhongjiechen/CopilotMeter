@@ -12,6 +12,23 @@ public struct RemoteSyncStatus: Sendable, Equatable {
     public let lastError: String?
 }
 
+/// Status for a one-shot `rsync` push of `~/.copilot/skills` and
+/// `~/.copilot/agents` to a remote host. Independent of `RemoteSyncStatus`
+/// (which describes data-pull syncs) because the two cadences and failure
+/// modes are unrelated.
+public struct SkillSyncStatus: Sendable, Equatable {
+    public enum Phase: String, Sendable, Equatable {
+        case idle, pushing, success, failed
+    }
+    public let host: String
+    public let phase: Phase
+    public let lastPushedAt: Date?
+    /// Last outcome's `combinedError`. Nil on success or before first push.
+    public let lastError: String?
+    /// Last outcome — preserved for the UI to show file/byte counts.
+    public let lastOutcome: RemoteSkillSync.Outcome?
+}
+
 /// Top-level service: scans data sources, updates the cache, and publishes
 /// an aggregated `Snapshot` for the UI to consume.
 ///
@@ -25,6 +42,10 @@ public final class UsageRefresher: ObservableObject {
     @Published public private(set) var lastRefreshAt: Date?
     /// Per-host status for enabled remotes (key = host nickname).
     @Published public private(set) var remoteStatus: [String: RemoteSyncStatus] = [:]
+    /// Per-host status for the user-initiated "push skills + agents" action.
+    /// Key = host nickname. Absent until the user has pressed the button
+    /// at least once on a host.
+    @Published public private(set) var skillSyncStatus: [String: SkillSyncStatus] = [:]
     /// User-discoverable hosts read from ~/.ssh/config (refreshed at startup
     /// and whenever the popover opens via `reloadDiscoveredHosts()`).
     @Published public private(set) var discoveredHosts: [SSHConfigParser.DiscoveredHost] = []
@@ -141,6 +162,62 @@ public final class UsageRefresher: ObservableObject {
     /// True if a remote is in the persisted config.
     public func isEnabled(_ name: String) -> Bool {
         enabledRemotes.contains(where: { $0.name == name })
+    }
+
+    /// One-button push of `~/.copilot/skills` and `~/.copilot/agents` to a
+    /// remote host via `rsync -a --delete`. Idempotent and safe to call
+    /// repeatedly; the second call is essentially free (rsync only ships
+    /// changed files). UI updates `skillSyncStatus[host.name]` as it runs.
+    ///
+    /// `host` must be a remote we already know about — we resolve the SSH
+    /// alias and identity-file from the user's enabled remotes list, with
+    /// a fallback to the discovered `~/.ssh/config` entry if the host is
+    /// not yet enabled (so users can push without first enabling sync).
+    public func pushSkillsAndAgents(to hostName: String) {
+        // Already pushing? Drop the duplicate request rather than queuing —
+        // a re-push during another push wouldn't transfer different data.
+        if skillSyncStatus[hostName]?.phase == .pushing { return }
+
+        let resolvedRemote: RemoteHost? = {
+            if let enabled = enabledRemotes.first(where: { $0.name == hostName }) {
+                return enabled
+            }
+            if let discovered = discoveredHosts.first(where: { $0.name == hostName }) {
+                return RemoteHost(name: discovered.name,
+                                  sshHost: discovered.name,
+                                  identityFile: discovered.identityFile)
+            }
+            return nil
+        }()
+
+        guard let remote = resolvedRemote else {
+            skillSyncStatus[hostName] = SkillSyncStatus(
+                host: hostName, phase: .failed, lastPushedAt: Date(),
+                lastError: "unknown host", lastOutcome: nil)
+            return
+        }
+
+        // Optimistic UI: spinner appears immediately.
+        skillSyncStatus[hostName] = SkillSyncStatus(
+            host: hostName, phase: .pushing,
+            lastPushedAt: skillSyncStatus[hostName]?.lastPushedAt,
+            lastError: nil,
+            lastOutcome: skillSyncStatus[hostName]?.lastOutcome
+        )
+
+        Task.detached(priority: .utility) {
+            let outcome = RemoteSkillSync.push(to: remote)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.skillSyncStatus[hostName] = SkillSyncStatus(
+                    host: hostName,
+                    phase: outcome.allSucceeded ? .success : .failed,
+                    lastPushedAt: Date(),
+                    lastError: outcome.combinedError,
+                    lastOutcome: outcome
+                )
+            }
+        }
     }
 
     private func clearRecordsForRemote(_ name: String) throws {

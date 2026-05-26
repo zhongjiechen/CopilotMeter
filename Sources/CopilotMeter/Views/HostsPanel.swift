@@ -19,6 +19,12 @@ struct HostsPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.bottom, 4)
 
+                Text("Tap **push skills** on any host to one-way rsync `~/.copilot/skills` and `~/.copilot/agents` from this Mac to that machine (uses `--delete`, so the remote becomes an exact mirror). Works whether the host is enabled for sync or not.")
+                    .font(.caption2)
+                    .foregroundStyle(.indigo.opacity(0.85))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.bottom, 4)
+
                 if refresher.discoveredHosts.isEmpty {
                     Text("No hosts found in ~/.ssh/config")
                         .font(.caption2)
@@ -81,6 +87,9 @@ private struct HostRow: View {
     private var status: RemoteSyncStatus? {
         refresher.remoteStatus[host.name]
     }
+    private var skillStatus: SkillSyncStatus? {
+        refresher.skillSyncStatus[host.name]
+    }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -101,6 +110,7 @@ private struct HostRow: View {
                 .lineLimit(1)
 
             Spacer(minLength: 4)
+            pushSkillsButton
             statusBadge
         }
         .padding(.vertical, 2)
@@ -110,10 +120,69 @@ private struct HostRow: View {
     }
 
     @ViewBuilder
+    private var pushSkillsButton: some View {
+        let isPushing = skillStatus?.phase == .pushing
+        Button {
+            refresher.pushSkillsAndAgents(to: host.name)
+        } label: {
+            HStack(spacing: 3) {
+                if isPushing {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: "arrow.up.doc.on.clipboard")
+                        .font(.system(size: 9))
+                }
+                Text(pushButtonLabel)
+                    .font(.caption2)
+            }
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+        }
+        .buttonStyle(.borderless)
+        .disabled(isPushing)
+        .help(pushButtonTooltip)
+    }
+
+    private var pushButtonLabel: String {
+        switch skillStatus?.phase {
+        case .pushing: return "pushing…"
+        case .success: return "re-push"
+        case .failed:  return "retry"
+        default:       return "push skills"
+        }
+    }
+
+    private var pushButtonTooltip: String {
+        let base = "rsync ~/.copilot/skills and ~/.copilot/agents → \(host.name):~/.copilot/ (--delete; trailing-slash safe)"
+        guard let s = skillStatus else { return base }
+        switch s.phase {
+        case .success:
+            if let outcome = s.lastOutcome {
+                let parts = outcome.results.map { r -> String in
+                    switch r.status {
+                    case .synced:
+                        let kb = r.bytesTransferred > 0
+                            ? " (\(Formatters.bytes(r.bytesTransferred)), \(r.filesTransferred) files)"
+                            : " (up-to-date)"
+                        return "\(r.dirName): synced\(kb)"
+                    case .skipped: return "\(r.dirName): skipped (no local dir)"
+                    case .failed:  return "\(r.dirName): \(r.error ?? "failed")"
+                    }
+                }
+                let when = s.lastPushedAt.map { " · " + Formatters.relative($0) } ?? ""
+                return parts.joined(separator: "\n") + when + "\n\n" + base
+            }
+            return base
+        case .failed:
+            return (s.lastError ?? "failed") + "\n\n" + base
+        default:
+            return base
+        }
+    }
+
+    @ViewBuilder
     private var statusBadge: some View {
-        if !isEnabled {
-            EmptyView()
-        } else if let s = status {
+        if isEnabled, let s = status {
             switch s.phase {
             case .syncing:
                 HStack(spacing: 4) {
@@ -150,8 +219,25 @@ private struct HostRow: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-        } else {
+        } else if isEnabled {
             Text("queued")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        } else if let sk = skillStatus, sk.phase == .failed {
+            // For not-enabled hosts we still want to surface push errors,
+            // since otherwise the button label just reads "retry" with no
+            // explanation visible.
+            Text(sk.lastError ?? "push failed")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(sk.lastError ?? "push failed")
+        } else if let sk = skillStatus, sk.phase == .success,
+                  let ts = sk.lastPushedAt {
+            // Tiny "pushed Xm ago" hint for not-enabled hosts so the user
+            // can tell at a glance what state they're in.
+            Text("pushed " + Formatters.relative(ts))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

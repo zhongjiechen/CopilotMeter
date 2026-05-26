@@ -54,4 +54,19 @@ enum Formatters {
     static func relative(_ date: Date) -> String {
         relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
+
+    /// Human-readable byte size (binary KiB/MiB, matching how rsync /
+    /// Finder communicates file sizes). Returns "—" for non-positive.
+    static func bytes(_ n: Int64) -> String {
+        guard n > 0 else { return "—" }
+        let units = ["B", "KB", "MB", "GB", "TB"]
+        var v = Double(n)
+        var i = 0
+        while v >= 1024 && i < units.count - 1 {
+            v /= 1024
+            i += 1
+        }
+        if i == 0 { return "\(n) B" }
+        return String(format: v >= 100 ? "%.0f %@" : "%.1f %@", v, units[i])
+    }
 }
