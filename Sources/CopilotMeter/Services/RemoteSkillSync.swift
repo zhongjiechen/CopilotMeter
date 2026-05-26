@@ -19,6 +19,9 @@ import Foundation
 ///   - Uses `rsync -a --delete` so the remote becomes a byte-for-byte
 ///     mirror of the local copy. Trailing slash on the source means
 ///     "contents of the dir, not the dir itself".
+///   - Pre-creates the remote parent dir (`~/.copilot`) via
+///     `--rsync-path="mkdir -p <parent> && rsync"` so a fresh remote
+///     without `.copilot/` doesn't fail.
 ///   - Honors `remote.identityFile` if set, matching the rest of the app.
 ///   - Runs in the background; results surface via the `Outcome` value
 ///     returned to the caller (which `UsageRefresher` publishes for the UI).
@@ -58,12 +61,27 @@ public enum RemoteSkillSync {
         }
     }
 
-    /// Locations on the local Mac. Exposed so tests can override.
-    public static var defaultSourceDirs: [(name: String, path: URL)] = {
+    /// One sync target: local dir → remote path, with a short human label.
+    public struct Target: Sendable, Equatable {
+        public let label: String       // e.g. "skills", shown in UI
+        public let localDir: URL       // e.g. ~/.copilot/skills
+        public let remotePath: String  // e.g. "~/.copilot/skills"
+    }
+
+    /// Locations on the local Mac → corresponding locations on the remote.
+    /// Exposed so tests can override.
+    ///
+    /// Any target whose `localDir` doesn't exist on the Mac is silently
+    /// skipped (we never `--delete` against a missing source).
+    public static var defaultTargets: [Target] = {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return [
-            ("skills", home.appendingPathComponent(".copilot/skills")),
-            ("agents", home.appendingPathComponent(".copilot/agents")),
+            Target(label: "skills",
+                   localDir: home.appendingPathComponent(".copilot/skills"),
+                   remotePath: "~/.copilot/skills"),
+            Target(label: "agents",
+                   localDir: home.appendingPathComponent(".copilot/agents"),
+                   remotePath: "~/.copilot/agents"),
         ]
     }()
 
@@ -71,12 +89,12 @@ public enum RemoteSkillSync {
     /// take seconds on first sync to a slow link, even though our payloads
     /// are typically <1 MB).
     public static func push(to remote: RemoteHost,
-                            sourceDirs: [(name: String, path: URL)] = defaultSourceDirs) -> Outcome {
+                            targets: [Target] = defaultTargets) -> Outcome {
         let start = Date()
         var results: [DirResult] = []
 
-        for (name, src) in sourceDirs {
-            results.append(rsyncOne(remote: remote, dirName: name, localDir: src))
+        for target in targets {
+            results.append(rsyncOne(remote: remote, target: target))
         }
 
         return Outcome(
@@ -88,19 +106,23 @@ public enum RemoteSkillSync {
 
     // MARK: - internals
 
-    private static func rsyncOne(remote: RemoteHost, dirName: String, localDir: URL) -> DirResult {
+    private static func rsyncOne(remote: RemoteHost, target: Target) -> DirResult {
         let fm = FileManager.default
         var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: localDir.path, isDirectory: &isDir), isDir.boolValue else {
-            return DirResult(dirName: dirName, status: .skipped,
+        guard fm.fileExists(atPath: target.localDir.path, isDirectory: &isDir), isDir.boolValue else {
+            return DirResult(dirName: target.label, status: .skipped,
                              bytesTransferred: 0, filesTransferred: 0,
                              error: nil)
         }
 
         // Trailing slash on src → copy *contents* of the dir, so the remote
-        // dir name matches the source dir name.
-        let src = localDir.path.hasSuffix("/") ? localDir.path : localDir.path + "/"
-        let dest = "\(remote.sshHost):~/.copilot/\(dirName)/"
+        // dir's contents match the source dir's contents.
+        let src = target.localDir.path.hasSuffix("/") ? target.localDir.path : target.localDir.path + "/"
+        let dest = "\(remote.sshHost):\(target.remotePath)/"
+
+        // Parent dir on the remote — pre-create via --rsync-path so a fresh
+        // remote that doesn't yet have `~/.claude/` or `~/.copilot/` works.
+        let remoteParent = (target.remotePath as NSString).deletingLastPathComponent
 
         var sshCmd = "ssh -o BatchMode=yes -o ConnectTimeout=8"
         if let key = remote.identityFile, !key.isEmpty {
@@ -121,6 +143,10 @@ public enum RemoteSkillSync {
             "--exclude", "._*",
             // Stats line at the end is parsed below for the UI.
             "--stats",
+            // Pre-create the remote parent dir (no-op if already there).
+            // This is portable across rsync versions, unlike --mkpath
+            // which only exists in rsync 3.2.3+.
+            "--rsync-path", "mkdir -p \(remoteParent) && rsync",
             "-e", sshCmd,
             src,
             dest,
@@ -134,7 +160,7 @@ public enum RemoteSkillSync {
         do {
             try proc.run()
         } catch {
-            return DirResult(dirName: dirName, status: .failed,
+            return DirResult(dirName: target.label, status: .failed,
                              bytesTransferred: 0, filesTransferred: 0,
                              error: "couldn't launch rsync: \(error.localizedDescription)")
         }
@@ -148,7 +174,7 @@ public enum RemoteSkillSync {
                 .split(separator: "\n")
                 .prefix(2)
                 .joined(separator: " · ")
-            return DirResult(dirName: dirName, status: .failed,
+            return DirResult(dirName: target.label, status: .failed,
                              bytesTransferred: 0, filesTransferred: 0,
                              error: stderr.isEmpty
                                 ? "rsync exit \(proc.terminationStatus)"
@@ -156,7 +182,7 @@ public enum RemoteSkillSync {
         }
 
         let (bytes, files) = parseStats(String(data: outData, encoding: .utf8) ?? "")
-        return DirResult(dirName: dirName, status: .synced,
+        return DirResult(dirName: target.label, status: .synced,
                          bytesTransferred: bytes,
                          filesTransferred: files,
                          error: nil)

@@ -1,40 +1,58 @@
 import SwiftUI
+import AppKit
 
 struct PopoverView: View {
     @ObservedObject var refresher: UsageRefresher
     @ObservedObject var updates: UpdateChecker
     @State private var selectedWindow: TimeWindow = .today
 
+    /// Cap the popover at ~80% of the active screen's visible height so it
+    /// never overflows the screen, even when HostsPanel is expanded or
+    /// ModelBreakdown lists many models. `visibleFrame` already excludes
+    /// the menu bar and Dock, so 80% of it is a comfortable cap that
+    /// leaves the user some surrounding context.
+    ///
+    /// Fallback (700pt) matches a typical 13" MacBook screen, so the popover
+    /// is still usable if no screen is available.
+    private var maxPopoverHeight: CGFloat {
+        let h = NSScreen.main?.visibleFrame.height ?? 900
+        return floor(h * 0.8)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
-            if updates.hasUpdate, let r = updates.latestRelease {
-                UpdateBanner(release: r, currentVersion: updates.currentVersion)
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 12) {
+                header
+                if updates.hasUpdate, let r = updates.latestRelease {
+                    UpdateBanner(release: r, currentVersion: updates.currentVersion)
+                }
+                SourceLegend()
+                tilesRow
+                HostsPanel(refresher: refresher)
+                Divider()
+                SelectedWindowDetail(
+                    window: selectedWindow,
+                    stats: refresher.snapshot.byWindow[selectedWindow] ?? .zero,
+                    blindChat: refresher.snapshot.blindChatByWindow[selectedWindow] ?? 0
+                )
+                RemotesStrip(
+                    window: selectedWindow,
+                    byRemote: refresher.snapshot.byWindowByRemote[selectedWindow] ?? [:]
+                )
+                Divider()
+                ModelBreakdown(
+                    window: selectedWindow,
+                    byModel: refresher.snapshot.byWindowByModel[selectedWindow] ?? [:]
+                )
+                Divider()
+                DailySparkline(data: refresher.snapshot.dailyRequests)
+                footer
             }
-            SourceLegend()
-            tilesRow
-            HostsPanel(refresher: refresher)
-            Divider()
-            SelectedWindowDetail(
-                window: selectedWindow,
-                stats: refresher.snapshot.byWindow[selectedWindow] ?? .zero,
-                blindChat: refresher.snapshot.blindChatByWindow[selectedWindow] ?? 0
-            )
-            RemotesStrip(
-                window: selectedWindow,
-                byRemote: refresher.snapshot.byWindowByRemote[selectedWindow] ?? [:]
-            )
-            Divider()
-            ModelBreakdown(
-                window: selectedWindow,
-                byModel: refresher.snapshot.byWindowByModel[selectedWindow] ?? [:]
-            )
-            Divider()
-            DailySparkline(data: refresher.snapshot.dailyRequests)
-            footer
+            .padding(14)
+            .frame(width: 500, alignment: .topLeading)
         }
-        .padding(14)
         .frame(width: 500)
+        .frame(maxHeight: maxPopoverHeight)
     }
 
     private var header: some View {
