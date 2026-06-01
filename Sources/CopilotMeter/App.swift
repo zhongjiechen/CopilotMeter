@@ -79,12 +79,19 @@ private struct MenuBarLabel: View {
         let totalRequests = Int(today.requests.rounded()) + chat
         let byRemote = refresher.snapshot.byWindowByRemote[.today] ?? [:]
         let localCredits = byRemote[nil]?.aiCredits ?? 0
-        let remoteEntries: [(String, Double)] = byRemote
-            .compactMap { (key, value) -> (String, Double)? in
+        // Per-remote chip data. Each chip carries both metrics so the
+        // formatter can pick credits when available and fall back to
+        // request count for VS-Code-Chat-only hosts (which have
+        // request_count > 0 but ai_credits_nano = NULL because GitHub
+        // doesn't emit totalNanoAiu for Chat — only for Copilot CLI).
+        let remoteEntries: [(String, Double, Int)] = byRemote
+            .compactMap { (key, value) -> (String, Double, Int)? in
                 guard let name = key else { return nil }
-                return value.aiCredits > 0 ? (name, value.aiCredits) : nil
+                let req = Int(value.requests.rounded())
+                guard value.aiCredits > 0 || req > 0 else { return nil }
+                return (name, value.aiCredits, req)
             }
-            .sorted { $0.1 > $1.1 }
+            .sorted { ($0.1, Double($0.2)) > ($1.1, Double($1.2)) }
         let breakdownText = remoteEntries.isEmpty ? nil : Self.breakdownString(
             localCredits: localCredits, remotes: remoteEntries
         )
@@ -145,15 +152,22 @@ private struct MenuBarLabel: View {
 
     /// Builds the compact "(L:12 host:30)" suffix shown after the credit total
     /// when remotes are configured. Each chip is an AI-Credit count rounded
-    /// to the nearest unit. Up to 2 remote chips; any extra hosts collapse
-    /// into a "+N" marker so the menu bar stays narrow.
-    private static func breakdownString(localCredits: Double, remotes: [(String, Double)]) -> String {
+    /// to the nearest unit. For VS-Code-Chat-only hosts (no AIU data),
+    /// the chip falls back to "N r" (the request count) so the menu bar
+    /// surfaces activity instead of an invisible "0". Up to 2 remote
+    /// chips; any extra hosts collapse into a "+N" marker so the menu
+    /// bar stays narrow.
+    private static func breakdownString(localCredits: Double, remotes: [(String, Double, Int)]) -> String {
         let visible = Array(remotes.prefix(2))
         let hidden = remotes.count - visible.count
         var parts: [String] = ["L:\(Formatters.compactCredits(localCredits))"]
-        for (name, c) in visible {
+        for (name, c, r) in visible {
             let short = name.count > 6 ? String(name.prefix(5)) + "…" : name
-            parts.append("\(short):\(Formatters.compactCredits(c))")
+            if c > 0 {
+                parts.append("\(short):\(Formatters.compactCredits(c))")
+            } else {
+                parts.append("\(short):\(r)r")
+            }
         }
         if hidden > 0 {
             parts.append("+\(hidden)")
@@ -162,14 +176,19 @@ private struct MenuBarLabel: View {
     }
 
     private func tooltip(credits: Double, usd: Double, requests: Int,
-                         localCredits: Double, remotes: [(String, Double)]) -> String {
+                         localCredits: Double, remotes: [(String, Double, Int)]) -> String {
         var lines: [String] = [
             "Today: \(Formatters.compactCredits(credits)) AI Credits  ≈ \(Formatters.compactUSD(usd))",
             "\(requests) requests",
             "• Local: \(Formatters.compactCredits(localCredits))",
         ]
-        for (name, c) in remotes {
-            lines.append("• \(name): \(Formatters.compactCredits(c))")
+        for (name, c, r) in remotes {
+            if c > 0 {
+                lines.append("• \(name): \(Formatters.compactCredits(c)) cr · \(r) req")
+            } else {
+                // No AIU emitted by GitHub for VS Code Chat — explain.
+                lines.append("• \(name): \(r) req (VS Code Chat — no AI Credit data)")
+            }
         }
         return lines.joined(separator: "\n")
     }

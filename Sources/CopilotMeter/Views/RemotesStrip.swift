@@ -2,18 +2,26 @@ import SwiftUI
 
 /// Compact per-remote summary chip strip. Hidden entirely when no remote
 /// activity is present in the selected window.
+///
+/// Display rule: each chip prefers AI Credits, but falls back to a
+/// `<N> req` count for hosts that only have VS Code Copilot Chat
+/// activity. Chat usage doesn't emit `totalNanoAiu` (GitHub only
+/// surfaces AIU for Copilot CLI), so a chat-only host has request_count
+/// > 0 but ai_credits_nano = NULL. Without this fallback those hosts
+/// would render as "0" and look broken even though they're being used
+/// actively.
 struct RemotesStrip: View {
     let window: TimeWindow
     let byRemote: [String?: UsageStats]
 
-    /// Non-nil keys, sorted by AI Credits desc.
+    /// Non-nil keys, sorted by AI Credits desc with request count as tiebreaker.
     private var remotes: [(String, UsageStats)] {
         byRemote
             .compactMap { (key, value) -> (String, UsageStats)? in
                 guard let name = key, (value.aiCredits > 0 || value.requests > 0) else { return nil }
                 return (name, value)
             }
-            .sorted { $0.1.aiCredits > $1.1.aiCredits }
+            .sorted { ($0.1.aiCredits, $0.1.requests) > ($1.1.aiCredits, $1.1.requests) }
     }
 
     /// Whether any non-local activity exists at all (across all windows of the snapshot).
@@ -27,35 +35,64 @@ struct RemotesStrip: View {
                     .foregroundStyle(.secondary)
                 HStack(spacing: 6) {
                     ForEach(remotes, id: \.0) { name, stats in
-                        HStack(spacing: 4) {
-                            Image(systemName: "network")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.indigo)
-                            Text("@\(name)")
-                                .font(.system(size: 11, weight: .medium))
-                            Text(Formatters.compactCredits(stats.aiCredits))
-                                .font(.system(size: 11, weight: .semibold))
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(
-                            Capsule().fill(Color.indigo.opacity(0.12))
-                        )
-                        .help("""
-                            \(name): \(Formatters.compactCredits(stats.aiCredits)) AI Credits \
-                            ≈ \(Formatters.compactUSD(stats.aiCreditsUsd)) · \
-                            \(Int(stats.requests.rounded())) req · \
-                            \(Formatters.compactInt(stats.outputTokens)) out · \
-                            \(Formatters.compactInt(stats.inputTokens)) in
-                            """)
+                        chip(name: name, stats: stats)
                     }
                     Spacer()
                 }
             }
         } else {
             EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func chip(name: String, stats: UsageStats) -> some View {
+        let hasCredits = stats.aiCredits > 0
+        let reqInt = Int(stats.requests.rounded())
+        HStack(spacing: 4) {
+            Image(systemName: "network")
+                .font(.system(size: 9))
+                .foregroundStyle(.indigo)
+            Text("@\(name)")
+                .font(.system(size: 11, weight: .medium))
+            if hasCredits {
+                Text(Formatters.compactCredits(stats.aiCredits))
+                    .font(.system(size: 11, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            } else {
+                // VS Code Chat-only host: show request count with an
+                // explicit "req" suffix so the chip never reads "0".
+                Text("\(reqInt) req")
+                    .font(.system(size: 11, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(
+            Capsule().fill(Color.indigo.opacity(0.12))
+        )
+        .help(tooltip(name: name, stats: stats, hasCredits: hasCredits, reqInt: reqInt))
+    }
+
+    private func tooltip(name: String, stats: UsageStats, hasCredits: Bool, reqInt: Int) -> String {
+        if hasCredits {
+            return """
+                \(name): \(Formatters.compactCredits(stats.aiCredits)) AI Credits \
+                ≈ \(Formatters.compactUSD(stats.aiCreditsUsd)) · \
+                \(reqInt) req · \
+                \(Formatters.compactInt(stats.outputTokens)) out · \
+                \(Formatters.compactInt(stats.inputTokens)) in
+                """
+        } else {
+            return """
+                \(name): \(reqInt) VS Code Copilot Chat requests in this window.
+                No AI Credit data is available for this host — GitHub only \
+                emits totalNanoAiu for Copilot CLI sessions, not for Chat. \
+                Run `copilot` on this remote to see credit counts here.
+                """
         }
     }
 }
