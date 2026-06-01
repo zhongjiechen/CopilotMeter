@@ -5,6 +5,7 @@ import AppKit
 struct CopilotMeterApp: App {
     @StateObject private var refresher = UsageRefresher()
     @StateObject private var updates = UpdateChecker()
+    @StateObject private var goalStore = DailyGoalStore()
 
     init() {
         // Open a regular window for screenshot / debug if --preview was passed.
@@ -52,13 +53,13 @@ struct CopilotMeterApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            PopoverView(refresher: refresher, updates: updates)
+            PopoverView(refresher: refresher, updates: updates, goal: goalStore)
         } label: {
-            MenuBarLabel(refresher: refresher, updates: updates)
+            MenuBarLabel(refresher: refresher, updates: updates, goal: goalStore)
                 .task {
                     refresher.startAutoRefresh(every: 60)
                     updates.start(initialDelay: 15)
-                    PreviewWindowController.shared.attach(refresher: refresher, updates: updates)
+                    PreviewWindowController.shared.attach(refresher: refresher, updates: updates, goal: goalStore)
                 }
         }
         .menuBarExtraStyle(.window)
@@ -68,6 +69,7 @@ struct CopilotMeterApp: App {
 private struct MenuBarLabel: View {
     @ObservedObject var refresher: UsageRefresher
     @ObservedObject var updates: UpdateChecker
+    @ObservedObject var goal: DailyGoalStore
 
     var body: some View {
         let today = refresher.snapshot.byWindow[.today] ?? .zero
@@ -87,9 +89,24 @@ private struct MenuBarLabel: View {
             localCredits: localCredits, remotes: remoteEntries
         )
 
+        // Achievement state drives the menu-bar's emoji prefix +
+        // colored gradient. The fireworks emoji sequence is purely a
+        // visual flourish; the underlying number is unchanged.
+        let achieved = goal.achievedToday
+        let achievedStyle: AnyShapeStyle = achieved
+            ? AnyShapeStyle(LinearGradient(
+                colors: [.orange, .pink, .purple, .blue],
+                startPoint: .leading, endPoint: .trailing))
+            : AnyShapeStyle(Color.primary)
+
         HStack(spacing: 4) {
             ZStack(alignment: .topTrailing) {
-                Image(systemName: totalCredits > 0 ? "chart.bar.fill" : "chart.bar")
+                if achieved {
+                    Text(goal.currentEmoji)
+                        .font(.system(size: 13))
+                } else {
+                    Image(systemName: totalCredits > 0 ? "chart.bar.fill" : "chart.bar")
+                }
                 if updates.hasUpdate {
                     Circle()
                         .fill(Color.orange)
@@ -100,11 +117,18 @@ private struct MenuBarLabel: View {
             // Primary number is **AI Credits used today** — the same unit
             // GitHub uses on the side panel of the Copilot CLI since the
             // 2026-06-01 billing change. Breakdown chip (when there are
-            // remotes) reuses the AIU split per host.
+            // remotes) reuses the AIU split per host. When the daily
+            // goal is met, the number flips to a colored gradient so
+            // the menu bar visibly says "done for today".
             Text(totalCredits > 0 ? Formatters.compactCredits(totalCredits) : "—")
                 .monospacedDigit()
                 .font(.system(size: 12, weight: .semibold))
-            if let breakdownText {
+                .foregroundStyle(achievedStyle)
+            if achieved {
+                Text("✓")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Color.green)
+            } else if let breakdownText {
                 Text(breakdownText)
                     .monospacedDigit()
                     .font(.system(size: 11, weight: .regular))
@@ -115,6 +139,14 @@ private struct MenuBarLabel: View {
             credits: totalCredits, usd: totalUsd, requests: totalRequests,
             localCredits: localCredits, remotes: remoteEntries
         ))
+        // Drive goal evaluation off the published today-credits value.
+        // The .onAppear fires once on the first body render so the app
+        // picks up an already-met goal right after launch (in case the
+        // goal had been met before the previous run quit).
+        .onAppear { goal.evaluate(todayCredits: totalCredits) }
+        .onChange(of: totalCredits) { newValue in
+            goal.evaluate(todayCredits: newValue)
+        }
     }
 
     /// Builds the compact "(L:12 host:30)" suffix shown after the credit total
@@ -185,9 +217,9 @@ final class PreviewWindowController {
         }
     }
 
-    func attach(refresher: UsageRefresher, updates: UpdateChecker) {
+    func attach(refresher: UsageRefresher, updates: UpdateChecker, goal: DailyGoalStore) {
         guard let window else { return }
-        let hosting = NSHostingView(rootView: PopoverView(refresher: refresher, updates: updates))
+        let hosting = NSHostingView(rootView: PopoverView(refresher: refresher, updates: updates, goal: goal))
         hosting.frame = NSRect(x: 0, y: 0, width: 540, height: 820)
         window.contentView = hosting
         window.setContentSize(NSSize(width: 540, height: 820))

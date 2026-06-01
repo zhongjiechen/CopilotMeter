@@ -17,6 +17,7 @@ private struct PopoverContentHeightKey: PreferenceKey {
 struct PopoverView: View {
     @ObservedObject var refresher: UsageRefresher
     @ObservedObject var updates: UpdateChecker
+    @ObservedObject var goal: DailyGoalStore
     @State private var selectedWindow: TimeWindow = .today
 
     /// Cached measured height of the inner content, fed by PopoverContentHeightKey.
@@ -53,6 +54,7 @@ struct PopoverView: View {
                 }
                 SourceLegend()
                 tilesRow
+                DailyGoalPanel(refresher: refresher, goal: goal)
                 HostsPanel(refresher: refresher)
                 Divider()
                 SelectedWindowDetail(

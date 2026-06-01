@@ -44,6 +44,7 @@ No background daemons, no helper tools. The whole app is one Swift binary linked
 
 ## 📣 News
 
+- **v0.1.21** — **Daily AI-Credits goal + menu-bar fireworks 🎉.** New *Daily goal* panel in the popover lets you set a target in AI Credits (1 credit = $0.01). Progress bar tracks toward it; when today's usage crosses the goal, the menu bar fires a 6-second emoji-frame fireworks burst (🎉 ✨ 🎆 🎇 🪅) and switches the credit number to a colored orange→pink→purple→blue gradient with a green ✓. The colored state persists until midnight (your local timezone) so the bar visibly says "done for today". The animation only fires once per day per goal, so it won't keep replaying every refresh.
 - **v0.1.20** — **Critical popover fix.** v0.1.19's ScrollView wrap regressed: inside `MenuBarExtra(style: .window)` a bare `ScrollView` has no intrinsic vertical content size, so the popover collapsed to a thin sliver. v0.1.20 measures the inner content with a `GeometryReader + PreferenceKey` and pins the ScrollView height to `min(measuredContent, 80% of visibleFrame)`. The popover now fits its content exactly and only scrolls when content actually overflows the 80% cap.
 
 ## Install
