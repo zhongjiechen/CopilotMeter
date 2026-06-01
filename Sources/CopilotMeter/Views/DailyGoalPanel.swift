@@ -76,6 +76,15 @@ struct DailyGoalPanel: View {
             Spacer()
             if goal.hasGoal && !editing {
                 Button {
+                    goal.playPreview()
+                } label: {
+                    Image(systemName: "sparkles")
+                        .font(.caption2)
+                }
+                .buttonStyle(.borderless)
+                .help("Preview the full-screen celebration animation")
+
+                Button {
                     draftCredits = goal.goalCredits.trimmedString
                     editing = true
                 } label: {

@@ -101,12 +101,10 @@ private struct MenuBarLabel: View {
 
         HStack(spacing: 4) {
             ZStack(alignment: .topTrailing) {
-                if achieved {
-                    Text(goal.currentEmoji)
-                        .font(.system(size: 13))
-                } else {
-                    Image(systemName: totalCredits > 0 ? "chart.bar.fill" : "chart.bar")
-                }
+                Image(systemName: achieved
+                      ? "checkmark.seal.fill"
+                      : (totalCredits > 0 ? "chart.bar.fill" : "chart.bar"))
+                    .foregroundStyle(achieved ? AnyShapeStyle(Color.green) : AnyShapeStyle(Color.primary))
                 if updates.hasUpdate {
                     Circle()
                         .fill(Color.orange)
@@ -119,16 +117,12 @@ private struct MenuBarLabel: View {
             // 2026-06-01 billing change. Breakdown chip (when there are
             // remotes) reuses the AIU split per host. When the daily
             // goal is met, the number flips to a colored gradient so
-            // the menu bar visibly says "done for today".
+            // the menu bar visibly says "done for today" until midnight.
             Text(totalCredits > 0 ? Formatters.compactCredits(totalCredits) : "—")
                 .monospacedDigit()
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(achievedStyle)
-            if achieved {
-                Text("✓")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(Color.green)
-            } else if let breakdownText {
+            if !achieved, let breakdownText {
                 Text(breakdownText)
                     .monospacedDigit()
                     .font(.system(size: 11, weight: .regular))
