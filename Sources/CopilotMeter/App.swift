@@ -41,11 +41,13 @@ struct CopilotMeterApp: App {
         }
         print("byWindowByRemote (today):")
         for (key, agg) in (snap.byWindowByRemote[.today] ?? [:]) {
-            print("  \(key ?? "<local>"): requests=\(Int(agg.requests))")
+            print(String(format: "  %@: requests=%d  credits=%.3f AIU",
+                         key ?? "<local>", Int(agg.requests), agg.aiCredits))
         }
         print("byWindowByRemote (month):")
         for (key, agg) in (snap.byWindowByRemote[.month] ?? [:]) {
-            print("  \(key ?? "<local>"): requests=\(Int(agg.requests))")
+            print(String(format: "  %@: requests=%d  credits=%.3f AIU",
+                         key ?? "<local>", Int(agg.requests), agg.aiCredits))
         }
         print("blindChatByWindow (month): \(snap.blindChatByWindow[.month] ?? 0)")
         exit(0)

@@ -15,6 +15,13 @@ public struct UsageAggregator: Sendable {
         public var byWindowBySource: [TimeWindow: [UsageRecord.Source: UsageStats]]
         /// `nil` key = local, non-nil = remote host nickname.
         public var byWindowByRemote: [TimeWindow: [String?: UsageStats]]
+        /// Joint host × source breakdown. Used by the RemotesStrip tooltip
+        /// so users can see e.g. "@host → Cloud Agent 211 AIU, VS Code Chat 10 req"
+        /// instead of guessing how a per-host total decomposes across sources.
+        /// Inner-`nil` host key = local. This is a joint distribution; you
+        /// cannot reconstruct it from the marginal `byWindowByRemote` and
+        /// `byWindowBySource` aggregates above.
+        public var byWindowByRemoteSource: [TimeWindow: [String?: [UsageRecord.Source: UsageStats]]]
         public var blindChatByWindow: [TimeWindow: Int]
         public var dailyRequests: [DailyPoint]
 
@@ -24,6 +31,7 @@ public struct UsageAggregator: Sendable {
             byWindowByModel: [:],
             byWindowBySource: [:],
             byWindowByRemote: [:],
+            byWindowByRemoteSource: [:],
             blindChatByWindow: [:],
             dailyRequests: []
         )
@@ -36,6 +44,7 @@ public struct UsageAggregator: Sendable {
         var byWindowByModel: [TimeWindow: [String: UsageStats]] = [:]
         var byWindowBySource: [TimeWindow: [UsageRecord.Source: UsageStats]] = [:]
         var byWindowByRemote: [TimeWindow: [String?: UsageStats]] = [:]
+        var byWindowByRemoteSource: [TimeWindow: [String?: [UsageRecord.Source: UsageStats]]] = [:]
         var blindChat: [TimeWindow: Int] = [:]
         var dailyRequests: [Date: Double] = [:]
         var dailyCredits: [Date: Double] = [:]
@@ -45,6 +54,7 @@ public struct UsageAggregator: Sendable {
             byWindowByModel[w] = [:]
             byWindowBySource[w] = [:]
             byWindowByRemote[w] = [:]
+            byWindowByRemoteSource[w] = [:]
             blindChat[w] = 0
         }
 
@@ -70,6 +80,7 @@ public struct UsageAggregator: Sendable {
                 byWindowByModel[w]![modelKey, default: .zero].add(r)
                 byWindowBySource[w]![r.source, default: .zero].add(r)
                 byWindowByRemote[w]![r.remoteName, default: .zero].add(r)
+                byWindowByRemoteSource[w]![r.remoteName, default: [:]][r.source, default: .zero].add(r)
                 if r.source == .vscodeChat {
                     blindChat[w]! += Int(r.requestCount)
                 }
@@ -94,6 +105,7 @@ public struct UsageAggregator: Sendable {
             byWindowByModel: byWindowByModel,
             byWindowBySource: byWindowBySource,
             byWindowByRemote: byWindowByRemote,
+            byWindowByRemoteSource: byWindowByRemoteSource,
             blindChatByWindow: blindChat,
             dailyRequests: sparkline
         )

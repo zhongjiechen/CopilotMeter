@@ -64,7 +64,8 @@ struct PopoverView: View {
                 )
                 RemotesStrip(
                     window: selectedWindow,
-                    byRemote: refresher.snapshot.byWindowByRemote[selectedWindow] ?? [:]
+                    byRemote: refresher.snapshot.byWindowByRemote[selectedWindow] ?? [:],
+                    byRemoteSource: refresher.snapshot.byWindowByRemoteSource[selectedWindow] ?? [:]
                 )
                 Divider()
                 ModelBreakdown(
