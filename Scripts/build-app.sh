@@ -14,12 +14,10 @@ echo "==> Building Swift package (config=$CONFIG, arch=$ARCH)"
 # Use arch -arm64 to force arm64 build even when launched under Rosetta terminal.
 if [[ "$(uname -m)" == "x86_64" && -n "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" ]] && \
    sysctl -n sysctl.proc_translated 2>/dev/null | grep -q 1; then
-  PREFIX=(arch -arm64)
+  arch -arm64 swift build -c "$CONFIG" --arch "$ARCH"
 else
-  PREFIX=()
+  swift build -c "$CONFIG" --arch "$ARCH"
 fi
-
-"${PREFIX[@]}" swift build -c "$CONFIG" --arch "$ARCH"
 
 BIN_PATH="$(swift build -c "$CONFIG" --arch "$ARCH" --show-bin-path)"
 EXE="$BIN_PATH/$APP_NAME"

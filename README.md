@@ -44,6 +44,8 @@ No background daemons, no helper tools. The whole app is one Swift binary linked
 
 ## 📣 News
 
+- **v0.1.25** — **Remote AI-Credit backfill for hosts synced before `totalNanoAiu` support.** Older CopilotMeter builds could advance a remote host's extractor offsets past `session.shutdown` lines before reading GitHub's authoritative `totalNanoAiu`, leaving hosts like `l40` stuck on low token-based estimates. This release resets each remote extractor offset once, replays finished-session rollups, and backfills `ai_credits_nano` idempotently in the local cache.
+
 - **v0.1.24** — **Per-host source breakdown in the *Remote hosts* tooltip + an inline note explaining how resumed `copilot --resume` sessions show up.** Hover any remote chip (e.g. `@host 211 AIU`) and you now see a per-source decomposition like `Cloud Agent: 211 cr · 114 req` / `VS Code Chat: 10 req` instead of a single aggregated number. A new caption below the chip strip explains the most common point of confusion: when you run `copilot --resume` on a remote against an agent worktree (branch `agents/...`, cwd `.worktrees/agents-...`), the original GitHub Coding Agent session keeps emitting `context.hostType="github"` in its events.jsonl, so the resumed sessions classify as **Cloud Agent** rather than CLI — even though you typed `copilot` in your terminal. The classification is correct (the data does come from a Coding Agent session); the tooltip + caption now make that visible instead of leaving users to guess where their usage went. Added a joint `byWindowByRemoteSource` aggregate to back the breakdown; no pricing or ingestion change.
 
 ## Install

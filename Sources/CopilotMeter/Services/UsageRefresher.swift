@@ -317,8 +317,7 @@ enum RefreshWorker {
         // re-triggers both halves of the migration in lockstep.
         let migrationKey = "v016_split_transcript_agent_remote_offsets_v2"
         if !cache.migrationDone(migrationKey) {
-            let remotesRoot = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Application Support/CopilotMeter/remotes")
+            let remotesRoot = remoteMirrorsRoot()
             if let contents = try? FileManager.default.contentsOfDirectory(at: remotesRoot, includingPropertiesForKeys: nil) {
                 for dir in contents {
                     let offsetsPath = dir.appendingPathComponent("offsets.json")
@@ -326,6 +325,12 @@ enum RefreshWorker {
                 }
             }
             cache.markMigrationDone(migrationKey)
+        }
+
+        do {
+            try resetRemoteExtractorOffsetsForAiuBackfillIfNeeded(cache: cache)
+        } catch {
+            phaseErrors.append(PathScrubber.scrub("Remote AIU backfill: \(error)"))
         }
 
         let parser = EventsJSONLParser()
@@ -460,6 +465,42 @@ enum RefreshWorker {
         if FileManager.default.fileExists(atPath: devCandidate.path) { return devCandidate.path }
         // 3. Last resort: a fixed path checked into the repo.
         return "/usr/local/share/copilotmeter/remote_extract.py"
+    }
+
+    static func remoteMirrorsRoot() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/CopilotMeter/remotes")
+    }
+
+    static let remoteAiuBackfillKey = "v018_remote_aiu_backfill_offsets"
+
+    /// v0.1.18 migration: remote extractors may have already advanced
+    /// `offsets.json` past `session.shutdown` lines before this app learned to
+    /// parse `totalNanoAiu`. Resetting offsets once forces the next successful
+    /// remote sync to re-emit finished-session rollups; `CacheStore.insertRecord`
+    /// is idempotent and backfills `ai_credits_nano` on existing shutdown rows.
+    static func resetRemoteExtractorOffsetsForAiuBackfillIfNeeded(
+        cache: CacheStore,
+        remotesRoot: URL = remoteMirrorsRoot()
+    ) throws {
+        guard !cache.migrationDone(remoteAiuBackfillKey) else { return }
+
+        if let contents = try? FileManager.default.contentsOfDirectory(
+            at: remotesRoot,
+            includingPropertiesForKeys: nil
+        ) {
+            for dir in contents {
+                let offsetsPath = dir.appendingPathComponent("offsets.json")
+                if FileManager.default.fileExists(atPath: offsetsPath.path) {
+                    try FileManager.default.removeItem(at: offsetsPath)
+                }
+            }
+        }
+
+        // Safe to mark before a remote sync succeeds: if extraction fails,
+        // `RemoteSSHExtractor.saveOffsets` is not called, so the deleted offsets
+        // remain absent and the next successful sync still starts from byte 0.
+        cache.markMigrationDone(remoteAiuBackfillKey)
     }
 
     /// Hydrates `UsageRecord`s from the JSONL stream returned by
