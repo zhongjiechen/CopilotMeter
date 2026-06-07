@@ -89,7 +89,7 @@ public struct UsageStats: Equatable, Sendable {
     /// USD equivalent of `aiCredits` (1 AI Credit = $0.01).
     public var aiCreditsUsd: Double { aiCredits * 0.01 }
 
-    public mutating func add(_ r: UsageRecord) {
+    public mutating func add(_ r: UsageRecord, includeEstimatedAiCredits: Bool = true) {
         requests += r.requestCount
         outputTokens += r.outputTokens
         inputTokens += r.inputTokens
@@ -104,7 +104,7 @@ public struct UsageStats: Equatable, Sendable {
         if let nano = r.aiCreditsNano {
             aiCredits += Double(nano) / 1_000_000_000.0
             aiCreditsAuthoritativeRows += 1
-        } else {
+        } else if includeEstimatedAiCredits {
             aiCredits += est * 100.0
         }
     }

@@ -48,6 +48,10 @@ public struct UsageRecord: Hashable, Codable, Sendable {
     /// nickname from `remotes.json`.
     public let remoteName: String?
 
+    public static func shutdownMessageId(lineOffset: Int64) -> String {
+        "shutdown:\(lineOffset)"
+    }
+
     public init(
         timestamp: Date,
         sessionId: String,

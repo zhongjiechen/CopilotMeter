@@ -39,6 +39,20 @@ public struct UsageAggregator: Sendable {
 
     public init() {}
 
+    private struct CreditKey: Hashable {
+        let sessionId: String
+        let source: UsageRecord.Source
+        let model: String
+        let remoteName: String?
+
+        init(_ record: UsageRecord) {
+            self.sessionId = record.sessionId
+            self.source = record.source
+            self.model = record.model
+            self.remoteName = record.remoteName
+        }
+    }
+
     public func snapshot(records: [UsageRecord], now: Date = Date(), calendar: Calendar = .current) -> Snapshot {
         var byWindow: [TimeWindow: UsageStats] = [:]
         var byWindowByModel: [TimeWindow: [String: UsageStats]] = [:]
@@ -58,7 +72,12 @@ public struct UsageAggregator: Sendable {
             blindChat[w] = 0
         }
 
+        let authoritativeCreditKeys = Set(records.compactMap { record -> CreditKey? in
+            record.aiCreditsNano == nil ? nil : CreditKey(record)
+        })
+
         for r in records {
+            let includeEstimatedAiCredits = !(r.requestCount > 0 && authoritativeCreditKeys.contains(CreditKey(r)))
             let dayStart = calendar.startOfDay(for: r.timestamp)
             dailyRequests[dayStart, default: 0] += r.requestCount
             // Per-record AI Credits: prefer the authoritative CLI value;
@@ -66,8 +85,10 @@ public struct UsageAggregator: Sendable {
             let perRecordCredits: Double
             if let nano = r.aiCreditsNano {
                 perRecordCredits = Double(nano) / 1_000_000_000.0
-            } else {
+            } else if includeEstimatedAiCredits {
                 perRecordCredits = PricingCatalog.estimatedCost(for: r) * 100.0
+            } else {
+                perRecordCredits = 0
             }
             dailyCredits[dayStart, default: 0] += perRecordCredits
 
@@ -76,11 +97,11 @@ public struct UsageAggregator: Sendable {
             let modelKey = r.remoteName.map { "\(r.model) @\($0)" } ?? r.model
 
             for w in TimeWindow.allCases where w.contains(r.timestamp, now: now) {
-                byWindow[w]!.add(r)
-                byWindowByModel[w]![modelKey, default: .zero].add(r)
-                byWindowBySource[w]![r.source, default: .zero].add(r)
-                byWindowByRemote[w]![r.remoteName, default: .zero].add(r)
-                byWindowByRemoteSource[w]![r.remoteName, default: [:]][r.source, default: .zero].add(r)
+                byWindow[w]!.add(r, includeEstimatedAiCredits: includeEstimatedAiCredits)
+                byWindowByModel[w]![modelKey, default: .zero].add(r, includeEstimatedAiCredits: includeEstimatedAiCredits)
+                byWindowBySource[w]![r.source, default: .zero].add(r, includeEstimatedAiCredits: includeEstimatedAiCredits)
+                byWindowByRemote[w]![r.remoteName, default: .zero].add(r, includeEstimatedAiCredits: includeEstimatedAiCredits)
+                byWindowByRemoteSource[w]![r.remoteName, default: [:]][r.source, default: .zero].add(r, includeEstimatedAiCredits: includeEstimatedAiCredits)
                 if r.source == .vscodeChat {
                     blindChat[w]! += Int(r.requestCount)
                 }

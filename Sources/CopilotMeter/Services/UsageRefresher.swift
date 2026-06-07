@@ -333,6 +333,12 @@ enum RefreshWorker {
             phaseErrors.append(PathScrubber.scrub("Remote AIU backfill: \(error)"))
         }
 
+        do {
+            try resetRemoteExtractorOffsetsForShutdownEventIdsIfNeeded(cache: cache)
+        } catch {
+            phaseErrors.append(PathScrubber.scrub("Remote shutdown rebuild: \(error)"))
+        }
+
         let parser = EventsJSONLParser()
         let localChatReader = VSCodeChatReader()
         let localTranscriptsReader = VSCodeChatTranscriptsReader(cache: cache)
@@ -503,6 +509,32 @@ enum RefreshWorker {
         cache.markMigrationDone(remoteAiuBackfillKey)
     }
 
+    static let shutdownEventIdRemoteResetKey = "v019_shutdown_event_ids_remote_offsets"
+
+    /// v0.1.19 companion to CacheStore's shutdown-ID migration. The cache
+    /// drops old collapsed shutdown rows locally; remote hosts also need their
+    /// extractor offsets reset so finished shutdown lines are streamed again.
+    static func resetRemoteExtractorOffsetsForShutdownEventIdsIfNeeded(
+        cache: CacheStore,
+        remotesRoot: URL = remoteMirrorsRoot()
+    ) throws {
+        guard !cache.migrationDone(shutdownEventIdRemoteResetKey) else { return }
+
+        if let contents = try? FileManager.default.contentsOfDirectory(
+            at: remotesRoot,
+            includingPropertiesForKeys: nil
+        ) {
+            for dir in contents {
+                let offsetsPath = dir.appendingPathComponent("offsets.json")
+                if FileManager.default.fileExists(atPath: offsetsPath.path) {
+                    try FileManager.default.removeItem(at: offsetsPath)
+                }
+            }
+        }
+
+        cache.markMigrationDone(shutdownEventIdRemoteResetKey)
+    }
+
     /// Hydrates `UsageRecord`s from the JSONL stream returned by
     /// `RemoteSSHExtractor.extract`, then inserts them.
     ///
@@ -566,10 +598,12 @@ enum RefreshWorker {
                 )
                 try cache.insertRecord(rec, kind: .message)
 
-            case .sessionShutdownRow(let sid, let ts, let model, let input, let cr, let cw, let cost, let aiuNano):
+            case .sessionShutdownRow(let sid, let ts, let lineOffset, let model, let input, let cr, let cw, let cost, let aiuNano):
                 if input == 0 && cr == 0 && cw == 0 && cost == nil && aiuNano == nil { continue }
                 let rec = UsageRecord(
-                    timestamp: ts, sessionId: sid, messageId: nil,
+                    timestamp: ts,
+                    sessionId: sid,
+                    messageId: UsageRecord.shutdownMessageId(lineOffset: lineOffset),
                     source: classify(sid), model: model,
                     outputTokens: 0,
                     inputTokens: input, cacheReadTokens: cr, cacheWriteTokens: cw,

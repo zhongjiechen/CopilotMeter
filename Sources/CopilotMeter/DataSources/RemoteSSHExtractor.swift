@@ -66,7 +66,7 @@ public enum RemoteSSHExtractor {
     public enum ExtractedEvent {
         case sessionInfo(sid: String, ts: Date, selectedModel: String?, hostType: String?)
         case assistantMessage(sid: String, ts: Date, model: String?, messageId: String?, outputTokens: Int)
-        case sessionShutdownRow(sid: String, ts: Date, model: String, inputTokens: Int, cacheRead: Int, cacheWrite: Int, premiumCost: Double?, aiCreditsNano: Int64?)
+        case sessionShutdownRow(sid: String, ts: Date, lineOffset: Int64, model: String, inputTokens: Int, cacheRead: Int, cacheWrite: Int, premiumCost: Double?, aiCreditsNano: Int64?)
         case sessionEnded(sid: String)
         /// One VS Code Chat user.message turn from a workspaceStorage transcript.
         /// `sessionId` is the chat session UUID (filename of the .jsonl);
@@ -272,6 +272,17 @@ public enum RemoteSSHExtractor {
                 ))
             case "s":
                 guard let model = obj["model"] as? String else { continue }
+                let lineOffset: Int64?
+                if let n = obj["soff"] as? Int64 {
+                    lineOffset = n
+                } else if let n = obj["soff"] as? Int {
+                    lineOffset = Int64(n)
+                } else if let d = obj["soff"] as? Double {
+                    lineOffset = Int64(d)
+                } else {
+                    lineOffset = nil
+                }
+                guard let lineOffset else { continue }
                 // `aiu` is the model's totalNanoAiu (nano-AIU integer).
                 // Only present on session.shutdown rollups emitted by
                 // newer Copilot CLI builds. Decode as Int64 so we don't
@@ -289,6 +300,7 @@ public enum RemoteSSHExtractor {
                 out.append(.sessionShutdownRow(
                     sid: sid,
                     ts: parseTimestamp(obj["ts"] as? String),
+                    lineOffset: lineOffset,
                     model: model,
                     inputTokens: (obj["in"] as? Int) ?? 0,
                     cacheRead: (obj["cr"] as? Int) ?? 0,

@@ -131,6 +131,7 @@ def process_file(path: str, sid: str, start_offset: int) -> int:
         if is_last:
             # Partial trailing line (after the final newline). Don't consume.
             break
+        line_offset = start_offset + consumed
         consumed += len(raw) + 1  # +1 for the newline
         if not raw:
             continue
@@ -166,6 +167,7 @@ def process_file(path: str, sid: str, start_offset: int) -> int:
                 cost_val = req.get("cost")
                 row = {
                     "sid": sid, "ts": ts, "t": "s", "model": model,
+                    "soff": line_offset,
                     "in": int(usage.get("inputTokens") or 0),
                     "cr": int(usage.get("cacheReadTokens") or 0),
                     "cw": int(usage.get("cacheWriteTokens") or 0),

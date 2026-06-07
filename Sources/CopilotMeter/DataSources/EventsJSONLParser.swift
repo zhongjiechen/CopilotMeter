@@ -75,6 +75,7 @@ public final class EventsJSONLParser {
                     sessionId: sessionId,
                     source: source,
                     remoteName: remoteName,
+                    eventByteOffset: nil,
                     sessionModel: &sessionModel,
                     hostType: &hostType,
                     lastEventAt: &lastEventAt
@@ -93,12 +94,22 @@ public final class EventsJSONLParser {
         var lineStart = 0
         for i in 0..<bytes.count {
             if bytes[i] == 0x0A { // newline
+                let currentLineStart = lineStart
                 let lineBytes = Data(bytes[lineStart..<i])
                 consumedBytesInChunk = Int64(i + 1)
                 lineStart = i + 1
                 guard !lineBytes.isEmpty else { continue }
                 if let parsed = try? JSONSerialization.jsonObject(with: lineBytes) as? [String: Any] {
-                    if let r = handleEvent(parsed, sessionId: sessionId, source: source, remoteName: remoteName, sessionModel: &sessionModel, hostType: &hostType, lastEventAt: &lastEventAt) {
+                    if let r = handleEvent(
+                        parsed,
+                        sessionId: sessionId,
+                        source: source,
+                        remoteName: remoteName,
+                        eventByteOffset: fromByteOffset + Int64(currentLineStart),
+                        sessionModel: &sessionModel,
+                        hostType: &hostType,
+                        lastEventAt: &lastEventAt
+                    ) {
                         records.append(contentsOf: r.records)
                         if r.shutdown { sessionEnded = true }
                     }
@@ -138,6 +149,7 @@ public final class EventsJSONLParser {
         sessionId: String,
         source: UsageRecord.Source,
         remoteName: String?,
+        eventByteOffset: Int64?,
         sessionModel: inout String?,
         hostType: inout String?,
         lastEventAt: inout Date?
@@ -186,6 +198,10 @@ public final class EventsJSONLParser {
                   let modelMetrics = data["modelMetrics"] as? [String: Any] else {
                 return EventOutcome(records: [], shutdown: true)
             }
+            guard let eventByteOffset else {
+                return EventOutcome(records: [], shutdown: true)
+            }
+            let shutdownMessageId = UsageRecord.shutdownMessageId(lineOffset: eventByteOffset)
             var rows: [UsageRecord] = []
             for (model, raw) in modelMetrics {
                 guard let m = raw as? [String: Any] else { continue }
@@ -213,7 +229,7 @@ public final class EventsJSONLParser {
                 rows.append(UsageRecord(
                     timestamp: ts,
                     sessionId: sessionId,
-                    messageId: nil,
+                    messageId: shutdownMessageId,
                     source: source,
                     model: model,
                     outputTokens: 0,

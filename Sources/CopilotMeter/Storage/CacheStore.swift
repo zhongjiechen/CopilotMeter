@@ -71,6 +71,7 @@ public final class CacheStore {
         """)
         try migrationV016SplitTranscriptAgent()
         try migrationV017DedupeShutdownRows()
+        try migrationV019ShutdownEventIds()
     }
 
     /// v0.1.6 migration: PR #11 ingested every transcript user.message as
@@ -189,6 +190,34 @@ public final class CacheStore {
         try db.execute(
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
             bindings: ["v017_dedup_shutdown", "done"]
+        )
+    }
+
+    /// v0.1.19 migration: v0.1.17 treated all shutdown rows for the same
+    /// `(session, model, remote)` as duplicate re-ingestion. Copilot CLI can
+    /// write multiple real `session.shutdown` delta rollups into the same
+    /// session file when a session is resumed, so those rows must be keyed by
+    /// the shutdown event's byte offset instead. Existing collapsed rows cannot
+    /// be repaired in-place; delete them and rescan local/remote event logs.
+    private func migrationV019ShutdownEventIds() throws {
+        var already = false
+        try db.query("SELECT value FROM schema_meta WHERE key = ?",
+                     bindings: ["v019_shutdown_event_ids_cache"]) { row in
+            already = (row.string(0) ?? "") == "done"
+        }
+        if already { return }
+
+        try db.exec("DROP INDEX IF EXISTS idx_records_unique_shutdown;")
+        try db.execute(
+            "DELETE FROM records WHERE kind = ?",
+            bindings: [RecordKind.shutdown.rawValue]
+        )
+        try db.execute(
+            "DELETE FROM file_state WHERE file_path LIKE '%/.copilot/session-state/%'"
+        )
+        try db.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+            bindings: ["v019_shutdown_event_ids_cache", "done"]
         )
     }
 
@@ -444,31 +473,33 @@ public final class CacheStore {
         }
     }
 
-    /// Updates the `ai_credits_nano` column on an existing shutdown row.
-    /// Used both during fresh ingestion (no-op if already set to same value)
-    /// and for one-shot back-fills after upgrading from a pre-AIU build.
-    /// Only overwrites NULL or smaller values to stay idempotent.
-    public func setAiCreditsNano(sessionId: String, remoteName: String?, model: String, nano: Int64) throws {
+    /// Updates the `ai_credits_nano` column on one existing shutdown row.
+    /// Shutdown rows are event deltas keyed by their synthetic message id, so
+    /// callers must pass that id to avoid stamping every resume delta in a
+    /// session with the same AIU value.
+    public func setAiCreditsNano(sessionId: String, messageId: String, remoteName: String?, model: String, nano: Int64) throws {
         guard nano > 0 else { return }
         if let name = remoteName {
             try db.execute(
                 """
                 UPDATE records SET ai_credits_nano = ?
                  WHERE session_id = ? AND remote_name = ?
+                   AND message_id = ?
                    AND model = ? AND kind = ?
                    AND (ai_credits_nano IS NULL OR ai_credits_nano < ?)
                 """,
-                bindings: [nano, sessionId, name, model, RecordKind.shutdown.rawValue, nano]
+                bindings: [nano, sessionId, name, messageId, model, RecordKind.shutdown.rawValue, nano]
             )
         } else {
             try db.execute(
                 """
                 UPDATE records SET ai_credits_nano = ?
                  WHERE session_id = ? AND remote_name IS NULL
+                   AND message_id = ?
                    AND model = ? AND kind = ?
                    AND (ai_credits_nano IS NULL OR ai_credits_nano < ?)
                 """,
-                bindings: [nano, sessionId, model, RecordKind.shutdown.rawValue, nano]
+                bindings: [nano, sessionId, messageId, model, RecordKind.shutdown.rawValue, nano]
             )
         }
     }
