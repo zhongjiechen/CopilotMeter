@@ -121,6 +121,54 @@ final class RemoteAiuBackfillTests: XCTestCase {
         XCTAssertGreaterThan(snapshot.byWindow[.today]?.estimatedRetailUsd ?? 0, 0)
     }
 
+    func testGithubHostedSessionWithCliResumeClassifiesAsCLI() {
+        XCTAssertEqual(
+            RefreshWorker.classifySession(
+                hostType: "github",
+                isVSCodeSession: false,
+                hasCliResume: true,
+                existingSource: nil
+            ),
+            .copilotCLI
+        )
+    }
+
+    func testCliResumeWinsOverVSCodeDbPresence() {
+        XCTAssertEqual(
+            RefreshWorker.classifySession(
+                hostType: "github",
+                isVSCodeSession: true,
+                hasCliResume: true,
+                existingSource: nil
+            ),
+            .copilotCLI
+        )
+    }
+
+    func testGithubHostedSessionWithoutCliResumeClassifiesAsCloudAgent() {
+        XCTAssertEqual(
+            RefreshWorker.classifySession(
+                hostType: "github",
+                isVSCodeSession: false,
+                hasCliResume: false,
+                existingSource: nil
+            ),
+            .codingAgent
+        )
+    }
+
+    func testExistingCliClassificationPersistsWhenIncrementalChunkHasNoResumeMarker() {
+        XCTAssertEqual(
+            RefreshWorker.classifySession(
+                hostType: "github",
+                isVSCodeSession: false,
+                hasCliResume: false,
+                existingSource: .copilotCLI
+            ),
+            .copilotCLI
+        )
+    }
+
     func testRemoteAiuBackfillDeletesOffsetsExactlyOnce() throws {
         let temp = try temporaryDirectory()
         let cache = try CacheStore(path: temp.appendingPathComponent("cache.db").path)
@@ -187,6 +235,70 @@ final class RemoteAiuBackfillTests: XCTestCase {
         try Data(#"{"session-a":789}"#.utf8).write(to: l40Offsets)
 
         try RefreshWorker.resetRemoteExtractorOffsetsForShutdownEventIdsIfNeeded(
+            cache: cache,
+            remotesRoot: remotesRoot
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: l40Offsets.path))
+    }
+
+    func testCliResumeClassificationDeletesOffsetsExactlyOnce() throws {
+        let temp = try temporaryDirectory()
+        let cache = try CacheStore(path: temp.appendingPathComponent("cache.db").path)
+        let remotesRoot = temp.appendingPathComponent("remotes")
+        let l40Offsets = remotesRoot
+            .appendingPathComponent("l40")
+            .appendingPathComponent("offsets.json")
+
+        try FileManager.default.createDirectory(
+            at: l40Offsets.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(#"{"session-a":123}"#.utf8).write(to: l40Offsets)
+
+        try RefreshWorker.resetRemoteExtractorOffsetsForCliResumeClassificationIfNeeded(
+            cache: cache,
+            remotesRoot: remotesRoot
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: l40Offsets.path))
+        XCTAssertTrue(cache.migrationDone(RefreshWorker.cliResumeClassificationRemoteResetKey))
+
+        try Data(#"{"session-a":789}"#.utf8).write(to: l40Offsets)
+
+        try RefreshWorker.resetRemoteExtractorOffsetsForCliResumeClassificationIfNeeded(
+            cache: cache,
+            remotesRoot: remotesRoot
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: l40Offsets.path))
+    }
+
+    func testCliResumePrecedenceDeletesOffsetsExactlyOnce() throws {
+        let temp = try temporaryDirectory()
+        let cache = try CacheStore(path: temp.appendingPathComponent("cache.db").path)
+        let remotesRoot = temp.appendingPathComponent("remotes")
+        let l40Offsets = remotesRoot
+            .appendingPathComponent("l40")
+            .appendingPathComponent("offsets.json")
+
+        try FileManager.default.createDirectory(
+            at: l40Offsets.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(#"{"session-a":123}"#.utf8).write(to: l40Offsets)
+
+        try RefreshWorker.resetRemoteExtractorOffsetsForCliResumePrecedenceIfNeeded(
+            cache: cache,
+            remotesRoot: remotesRoot
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: l40Offsets.path))
+        XCTAssertTrue(cache.migrationDone(RefreshWorker.cliResumePrecedenceRemoteResetKey))
+
+        try Data(#"{"session-a":789}"#.utf8).write(to: l40Offsets)
+
+        try RefreshWorker.resetRemoteExtractorOffsetsForCliResumePrecedenceIfNeeded(
             cache: cache,
             remotesRoot: remotesRoot
         )

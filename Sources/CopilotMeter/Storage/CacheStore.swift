@@ -72,6 +72,8 @@ public final class CacheStore {
         try migrationV016SplitTranscriptAgent()
         try migrationV017DedupeShutdownRows()
         try migrationV019ShutdownEventIds()
+        try migrationV028CliResumeClassification()
+        try migrationV029CliResumePrecedence()
     }
 
     /// v0.1.6 migration: PR #11 ingested every transcript user.message as
@@ -218,6 +220,47 @@ public final class CacheStore {
         try db.execute(
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
             bindings: ["v019_shutdown_event_ids_cache", "done"]
+        )
+    }
+
+    /// v0.1.28 migration: sessions that started in a GitHub-hosted agent
+    /// environment can later be resumed manually from a terminal. We rescan
+    /// events.jsonl once so `session.resume` markers can reclassify those
+    /// records from Cloud Agent to CLI.
+    private func migrationV028CliResumeClassification() throws {
+        var already = false
+        try db.query("SELECT value FROM schema_meta WHERE key = ?",
+                     bindings: ["v028_cli_resume_classification_cache"]) { row in
+            already = (row.string(0) ?? "") == "done"
+        }
+        if already { return }
+
+        try db.execute(
+            "DELETE FROM file_state WHERE file_path LIKE '%/.copilot/session-state/%'"
+        )
+        try db.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+            bindings: ["v028_cli_resume_classification_cache", "done"]
+        )
+    }
+
+    /// v0.1.29 migration: CLI resume should win even when the same session id
+    /// also appears in VS Code's DB. Rescan so the resume marker can correct
+    /// any rows classified as VS Code Agent by v0.1.28.
+    private func migrationV029CliResumePrecedence() throws {
+        var already = false
+        try db.query("SELECT value FROM schema_meta WHERE key = ?",
+                     bindings: ["v029_cli_resume_precedence_cache"]) { row in
+            already = (row.string(0) ?? "") == "done"
+        }
+        if already { return }
+
+        try db.execute(
+            "DELETE FROM file_state WHERE file_path LIKE '%/.copilot/session-state/%'"
+        )
+        try db.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+            bindings: ["v029_cli_resume_precedence_cache", "done"]
         )
     }
 
@@ -441,6 +484,60 @@ public final class CacheStore {
                    AND session_id IN (\(placeholders))
             """
             try db.execute(sql, bindings: bindings)
+        }
+    }
+
+    public func sourceForSession(sessionId: String, remoteName: String?) throws -> UsageRecord.Source? {
+        var sources: Set<UsageRecord.Source> = []
+        let sql: String
+        let bindings: [Any?]
+        if let name = remoteName {
+            sql = """
+                SELECT DISTINCT source FROM records
+                 WHERE session_id = ? AND remote_name = ?
+                   AND model != ?
+            """
+            bindings = [sessionId, name, "GitHub Copilot Chat"]
+        } else {
+            sql = """
+                SELECT DISTINCT source FROM records
+                 WHERE session_id = ? AND remote_name IS NULL
+                   AND model != ?
+            """
+            bindings = [sessionId, "GitHub Copilot Chat"]
+        }
+        try db.query(sql, bindings: bindings) { row in
+            if let raw = row.string(0),
+               let source = UsageRecord.Source(rawValue: raw) {
+                sources.insert(source)
+            }
+        }
+        if sources.contains(.copilotCLI) { return .copilotCLI }
+        if sources.contains(.codingAgent) { return .codingAgent }
+        if sources.contains(.vscodeAgent) { return .vscodeAgent }
+        if sources.contains(.vscodeChat) { return .vscodeChat }
+        return sources.first
+    }
+
+    public func reclassifySessionSource(sessionId: String, remoteName: String?, source: UsageRecord.Source) throws {
+        if let name = remoteName {
+            try db.execute(
+                """
+                UPDATE records SET source = ?
+                 WHERE session_id = ? AND remote_name = ?
+                   AND model != ?
+                """,
+                bindings: [source.rawValue, sessionId, name, "GitHub Copilot Chat"]
+            )
+        } else {
+            try db.execute(
+                """
+                UPDATE records SET source = ?
+                 WHERE session_id = ? AND remote_name IS NULL
+                   AND model != ?
+                """,
+                bindings: [source.rawValue, sessionId, "GitHub Copilot Chat"]
+            )
         }
     }
 

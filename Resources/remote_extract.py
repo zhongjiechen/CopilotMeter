@@ -159,6 +159,8 @@ def process_file(path: str, sid: str, start_offset: int) -> int:
                 if host_type:
                     obj_out["ht"] = host_type
                 emit(obj_out)
+        elif kind == "session.resume":
+            emit({"sid": sid, "ts": ts, "t": "resume"})
         elif kind == "session.shutdown":
             mm = d.get("modelMetrics") or {}
             for model, m in mm.items():

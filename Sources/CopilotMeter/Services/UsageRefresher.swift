@@ -339,6 +339,18 @@ enum RefreshWorker {
             phaseErrors.append(PathScrubber.scrub("Remote shutdown rebuild: \(error)"))
         }
 
+        do {
+            try resetRemoteExtractorOffsetsForCliResumeClassificationIfNeeded(cache: cache)
+        } catch {
+            phaseErrors.append(PathScrubber.scrub("Remote CLI resume classification: \(error)"))
+        }
+
+        do {
+            try resetRemoteExtractorOffsetsForCliResumePrecedenceIfNeeded(cache: cache)
+        } catch {
+            phaseErrors.append(PathScrubber.scrub("Remote CLI resume precedence: \(error)"))
+        }
+
         let parser = EventsJSONLParser()
         let localChatReader = VSCodeChatReader()
         let localTranscriptsReader = VSCodeChatTranscriptsReader(cache: cache)
@@ -535,19 +547,82 @@ enum RefreshWorker {
         cache.markMigrationDone(shutdownEventIdRemoteResetKey)
     }
 
+    static let cliResumeClassificationRemoteResetKey = "v028_cli_resume_classification_remote_offsets"
+
+    /// v0.1.28 companion to CacheStore's CLI-resume classification migration.
+    /// The remote extractor must replay old `session.resume` markers once so
+    /// GitHub-hosted sessions continued manually from a terminal are classified
+    /// as CLI instead of Cloud Agent.
+    static func resetRemoteExtractorOffsetsForCliResumeClassificationIfNeeded(
+        cache: CacheStore,
+        remotesRoot: URL = remoteMirrorsRoot()
+    ) throws {
+        guard !cache.migrationDone(cliResumeClassificationRemoteResetKey) else { return }
+
+        if let contents = try? FileManager.default.contentsOfDirectory(
+            at: remotesRoot,
+            includingPropertiesForKeys: nil
+        ) {
+            for dir in contents {
+                let offsetsPath = dir.appendingPathComponent("offsets.json")
+                if FileManager.default.fileExists(atPath: offsetsPath.path) {
+                    try FileManager.default.removeItem(at: offsetsPath)
+                }
+            }
+        }
+
+        cache.markMigrationDone(cliResumeClassificationRemoteResetKey)
+    }
+
+    static let cliResumePrecedenceRemoteResetKey = "v029_cli_resume_precedence_remote_offsets"
+
+    /// v0.1.29: `session.resume` is a stronger signal than presence in the
+    /// VS Code Chat DB. Some terminal CLI sessions also have a VS Code DB row,
+    /// but the resume marker means the user continued it via CLI.
+    static func resetRemoteExtractorOffsetsForCliResumePrecedenceIfNeeded(
+        cache: CacheStore,
+        remotesRoot: URL = remoteMirrorsRoot()
+    ) throws {
+        guard !cache.migrationDone(cliResumePrecedenceRemoteResetKey) else { return }
+
+        if let contents = try? FileManager.default.contentsOfDirectory(
+            at: remotesRoot,
+            includingPropertiesForKeys: nil
+        ) {
+            for dir in contents {
+                let offsetsPath = dir.appendingPathComponent("offsets.json")
+                if FileManager.default.fileExists(atPath: offsetsPath.path) {
+                    try FileManager.default.removeItem(at: offsetsPath)
+                }
+            }
+        }
+
+        cache.markMigrationDone(cliResumePrecedenceRemoteResetKey)
+    }
+
+    static func classifySession(
+        hostType: String?,
+        isVSCodeSession: Bool,
+        hasCliResume: Bool,
+        existingSource: UsageRecord.Source?
+    ) -> UsageRecord.Source {
+        if hasCliResume { return .copilotCLI }
+        if isVSCodeSession { return .vscodeAgent }
+        if hostType == "github", existingSource == .copilotCLI { return .copilotCLI }
+        if hostType == "github" { return .codingAgent }
+        return .copilotCLI
+    }
+
     /// Hydrates `UsageRecord`s from the JSONL stream returned by
     /// `RemoteSSHExtractor.extract`, then inserts them.
     ///
-    /// Classification of each event.jsonl session uses two signals from the
-    /// session.start payload:
+    /// Classification of each event.jsonl session uses these signals:
     ///
-    ///   1. `context.hostType == "github"` → GitHub Copilot **Cloud Agent** (the
-    ///      cloud-dispatched agent fired off from a PR or VS Code's "Delegate"
-    ///      feature).  → `.codingAgent` (rawValue kept for cache stability;
-    ///      user-facing label is "Cloud Agent").
-    ///   2. session_id present in the remote's VS Code Copilot Chat DB
+    ///   1. session_id present in the remote's VS Code Copilot Chat DB
     ///      `sessions` table → VS Code Copilot Chat in agent mode. → `.vscodeAgent`
-    ///   3. Otherwise → terminal `copilot` CLI. → `.copilotCLI`
+    ///   2. any `session.resume` event → manually resumed terminal CLI usage.
+    ///   3. `context.hostType == "github"` without a CLI resume → Cloud Agent.
+    ///   4. Otherwise → terminal `copilot` CLI. → `.copilotCLI`
     private static func ingestExtractedEvents(
         _ events: [RemoteSSHExtractor.ExtractedEvent],
         into cache: CacheStore,
@@ -558,12 +633,22 @@ enum RefreshWorker {
         // and which transcript sessions exhibited tool calls (= Agent mode).
         var sessionModel: [String: String] = [:]
         var sessionHostType: [String: String] = [:]
+        var sessionHasCliResume: Set<String> = []
+        var seenSessions: Set<String> = []
         var agentTranscriptSessions: Set<String> = []
         for e in events {
             switch e {
             case .sessionInfo(let sid, _, let sm, let ht):
+                seenSessions.insert(sid)
                 if let sm { sessionModel[sid] = sm }
                 if let ht { sessionHostType[sid] = ht }
+            case .sessionResumed(let sid):
+                seenSessions.insert(sid)
+                sessionHasCliResume.insert(sid)
+            case .assistantMessage(let sid, _, _, _, _),
+                 .sessionShutdownRow(let sid, _, _, _, _, _, _, _, _),
+                 .sessionEnded(let sid):
+                seenSessions.insert(sid)
             case .workspaceAgentMarker(let sid):
                 agentTranscriptSessions.insert(sid)
             default:
@@ -580,9 +665,21 @@ enum RefreshWorker {
         }
 
         func classify(_ sid: String) -> UsageRecord.Source {
-            if sessionHostType[sid] == "github" { return .codingAgent }
-            if remoteVsCodeIds.contains(sid) { return .vscodeAgent }
-            return .copilotCLI
+            let existing = try? cache.sourceForSession(sessionId: sid, remoteName: remoteName)
+            return classifySession(
+                hostType: sessionHostType[sid],
+                isVSCodeSession: remoteVsCodeIds.contains(sid),
+                hasCliResume: sessionHasCliResume.contains(sid),
+                existingSource: existing ?? nil
+            )
+        }
+
+        for sid in seenSessions {
+            try cache.reclassifySessionSource(
+                sessionId: sid,
+                remoteName: remoteName,
+                source: classify(sid)
+            )
         }
 
         for e in events {
@@ -627,7 +724,7 @@ enum RefreshWorker {
                 )
                 try cache.insertRecord(rec, kind: .message)
 
-            case .sessionInfo, .sessionEnded, .fileOffset, .transcriptOffset, .workspaceAgentMarker:
+            case .sessionInfo, .sessionResumed, .sessionEnded, .fileOffset, .transcriptOffset, .workspaceAgentMarker:
                 break
             }
         }
@@ -704,9 +801,12 @@ enum RefreshWorker {
                 remoteName: remoteName
             )
 
-            // hostType=github → this is a GitHub Copilot Cloud Agent session
-            // (cloud-dispatched, e.g. via /delegate). Override the source.
-            let finalSource: UsageRecord.Source = (parsed.hostType == "github") ? .codingAgent : initialSource
+            let finalSource = classifySession(
+                hostType: parsed.hostType,
+                isVSCodeSession: vsCodeIds.contains(sessionId),
+                hasCliResume: parsed.sessionResumed,
+                existingSource: try? cache.sourceForSession(sessionId: sessionId, remoteName: remoteName)
+            )
 
             // Backfill: if we now know this session's selectedModel, sweep any
             // previously-ingested "unknown" message rows for it. This recovers
@@ -715,6 +815,12 @@ enum RefreshWorker {
             if let sm = parsed.selectedModel, !sm.isEmpty {
                 try cache.backfillUnknownModel(sessionId: parsed.sessionId, remoteName: remoteName, model: sm)
             }
+
+            try cache.reclassifySessionSource(
+                sessionId: parsed.sessionId,
+                remoteName: remoteName,
+                source: finalSource
+            )
 
             for r in parsed.records {
                 let record: UsageRecord

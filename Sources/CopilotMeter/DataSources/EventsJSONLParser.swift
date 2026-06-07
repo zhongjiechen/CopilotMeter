@@ -28,6 +28,10 @@ public final class EventsJSONLParser {
         /// this to backfill records that previously decoded with model="unknown"
         /// (older CLI builds didn't include `model` on per-message events).
         public let selectedModel: String?
+        /// True when a `session.resume` event was observed. A GitHub-hosted
+        /// session resumed from a terminal is user-driven CLI usage from that
+        /// point of view, not a fresh Cloud Agent run.
+        public let sessionResumed: Bool
     }
 
     private static let iso8601: ISO8601DateFormatter = {
@@ -51,12 +55,13 @@ public final class EventsJSONLParser {
     public func parse(file: URL, fromByteOffset: Int64 = 0, source: UsageRecord.Source, remoteName: String? = nil) throws -> ParseResult {
         let sessionId = file.deletingLastPathComponent().lastPathComponent
         guard let handle = try? FileHandle(forReadingFrom: file) else {
-            return ParseResult(records: [], lastByteOffset: fromByteOffset, sessionId: sessionId, lastEventAt: nil, sessionEnded: false, hostType: nil, selectedModel: nil)
+            return ParseResult(records: [], lastByteOffset: fromByteOffset, sessionId: sessionId, lastEventAt: nil, sessionEnded: false, hostType: nil, selectedModel: nil, sessionResumed: false)
         }
         defer { try? handle.close() }
 
         var lastEventAt: Date?
         var sessionEnded = false
+        var sessionResumed = false
         // Track the session's selected model so we can fill in records where the
         // per-message event omits "model" (older event-log format).
         var sessionModel: String?
@@ -78,6 +83,7 @@ public final class EventsJSONLParser {
                     eventByteOffset: nil,
                     sessionModel: &sessionModel,
                     hostType: &hostType,
+                    sessionResumed: &sessionResumed,
                     lastEventAt: &lastEventAt
                 )
             }
@@ -108,6 +114,7 @@ public final class EventsJSONLParser {
                         eventByteOffset: fromByteOffset + Int64(currentLineStart),
                         sessionModel: &sessionModel,
                         hostType: &hostType,
+                        sessionResumed: &sessionResumed,
                         lastEventAt: &lastEventAt
                     ) {
                         records.append(contentsOf: r.records)
@@ -125,7 +132,8 @@ public final class EventsJSONLParser {
             lastEventAt: lastEventAt,
             sessionEnded: sessionEnded,
             hostType: hostType,
-            selectedModel: sessionModel
+            selectedModel: sessionModel,
+            sessionResumed: sessionResumed
         )
     }
 
@@ -152,6 +160,7 @@ public final class EventsJSONLParser {
         eventByteOffset: Int64?,
         sessionModel: inout String?,
         hostType: inout String?,
+        sessionResumed: inout Bool,
         lastEventAt: inout Date?
     ) -> EventOutcome? {
         guard let type = evt["type"] as? String else { return nil }
@@ -170,6 +179,10 @@ public final class EventsJSONLParser {
                     hostType = ht
                 }
             }
+            return nil
+
+        case "session.resume":
+            sessionResumed = true
             return nil
 
         case "assistant.message":
