@@ -1,11 +1,10 @@
 import SwiftUI
 
-/// A detailed panel showing input/output/cache/premium breakdown for the
+/// A detailed panel showing input/output/cache breakdown for the
 /// currently selected time window, sized to fit the popover without truncation.
 struct SelectedWindowDetail: View {
     let window: TimeWindow
     let stats: UsageStats
-    let blindChat: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -30,25 +29,15 @@ struct SelectedWindowDetail: View {
                            label: "Cache read",
                            value: Formatters.compactInt(stats.cacheReadTokens),
                            help: "Tokens that were served from prompt cache (the 'hits').")
-                    metric(color: .pink,
-                           label: "Premium ≈",
-                           value: String(format: "%.1f", stats.premiumCost),
-                           help: "Sum of recorded 'premium request units' for this window. Many enterprise models record 0 here.")
+                    metric(color: .indigo,
+                           label: "Cache write",
+                           value: Formatters.compactInt(stats.cacheWriteTokens),
+                           help: "Tokens written to prompt cache for future re-use.")
                 }
             }
 
             CacheHitBar(stats: stats)
             CostEstimateRow(stats: stats)
-
-            if blindChat > 0 {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Circle().fill(UsageRecord.Source.vscodeChat.color).frame(width: 7, height: 7)
-                    Text("\(blindChat) VS Code Chat interactions in this window have no token data — only the request count is known.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
         }
     }
 

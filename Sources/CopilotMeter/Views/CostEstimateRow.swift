@@ -1,26 +1,23 @@
 import SwiftUI
 
-/// Shows the estimated USD cost of the selected window, both at GitHub's
-/// per-premium-request overage rate and at the underlying provider's retail
-/// token rate. Useful as a "what-am-I-getting" indicator for enterprise users
-/// whose seats include unlimited usage and therefore see no dollar amount in
-/// the GitHub dashboard.
+/// Shows the selected window's cost using GitHub's AI Credit billing model.
 struct CostEstimateRow: View {
     let stats: UsageStats
 
     @State private var showingFormulaInfo: Bool = false
 
     var body: some View {
-        let gh = stats.githubOverageUsd
-        let aiu = stats.aiCreditsUsd
+        let aiuUsd = stats.aiCreditsUsd
         let retail = stats.estimatedRetailUsd
-        if gh == 0 && aiu == 0 && retail == 0 { EmptyView() } else {
+        let displayUsd = aiuUsd > 0 ? aiuUsd : retail
+        let displayCredits = stats.aiCredits > 0 ? stats.aiCredits : retail * 100.0
+        if displayUsd == 0 && displayCredits == 0 { EmptyView() } else {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
-                    Image(systemName: "dollarsign.circle.fill")
+                    Image(systemName: "shippingbox.fill")
                         .font(.system(size: 11))
-                        .foregroundStyle(.green)
-                    Text("Estimated cost")
+                        .foregroundStyle(.blue)
+                    Text("AI Credit cost")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                     Button {
@@ -48,77 +45,33 @@ struct CostEstimateRow: View {
                             .help("\(stats.aiCreditsAuthoritativeRows) row(s) carry authoritative `totalNanoAiu` from the Copilot CLI.")
                     }
                 }
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    costCell(
-                        label: "GitHub bill",
-                        value: gh,
-                        help: """
-                            Legacy request-based billing — only applies to Pro/Pro+ annual \
-                            subscribers who stayed on it after 2026-06-01. Computed from \
-                            the recorded `requests.cost` × $\(String(format: "%.2f", PricingCatalog.usdPerPremiumRequest)) per premium-request unit. \
-                            For Enterprise / usage-based-billing users it reads $0.00 — see the AI Credits column instead.
-                            """
-                    )
-                    costCell(
-                        label: "AI Credits",
-                        value: aiu > 0 ? aiu : retail,
-                        help: """
-                            GitHub's official 2026-06-01 usage-based bill. When the Copilot CLI emits \
-                            `session.shutdown.modelMetrics.<model>.totalNanoAiu` we read it directly \
-                            (authoritative). Otherwise we fall back to a per-token estimate using the \
-                            rates published at docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing. \
-                            1 AI Credit = $0.01 USD, so the USD figure shown here equals the credits count × $0.01.
-                            """
-                    )
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("\(Formatters.compactCredits(displayCredits)) AI Credits")
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                    Spacer(minLength: 0)
+                    Text("≈ \(Formatters.compactUSD(displayUsd))")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.green)
                 }
-                if aiu > 0 {
-                    HStack(spacing: 4) {
-                        Text("\(Formatters.compactCredits(stats.aiCredits)) AI Credits")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                        Spacer()
-                    }
-                    .padding(.horizontal, 8)
-                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.secondary.opacity(0.08))
+                )
+                .help("""
+                    GitHub's AI Credit billing model. When the Copilot CLI emits \
+                    `session.shutdown.modelMetrics.<model>.totalNanoAiu` we read it directly; otherwise \
+                    we estimate from token rates. 1 AI Credit = $0.01 USD.
+                    """)
             }
-        }
-    }
-
-    private func costCell(label: String, value: Double, help: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 0)
-            Text(formatUSD(value))
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .monospacedDigit()
-                .foregroundStyle(.primary)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.secondary.opacity(0.08))
-        )
-        .help(help)
-    }
-
-    private func formatUSD(_ v: Double) -> String {
-        if v >= 1_000 {
-            return String(format: "$%.0f", v)
-        } else if v >= 10 {
-            return String(format: "$%.2f", v)
-        } else if v > 0 {
-            return String(format: "$%.3f", v)
-        } else {
-            return "$0.00"
         }
     }
 }
 
-/// Detailed explanation of the two cost columns, surfaced via the ⓘ button.
+/// Detailed explanation of AI Credit billing, surfaced via the ⓘ button.
 /// Kept terse — power users can read the source for the full story.
 private struct CostFormulaPopover: View {
     var body: some View {
@@ -126,30 +79,13 @@ private struct CostFormulaPopover: View {
             VStack(alignment: .leading, spacing: 10) {
                 header
 
-                Text("**Starting 2026-06-01** GitHub moved Copilot from flat \"premium request\" billing to **usage-based billing in GitHub AI Credits**. 1 AI Credit = $0.01 USD. Code completions and Next Edit suggestions remain **free**.")
+                Text("**Starting 2026-06-01** GitHub Copilot usage is billed in **GitHub AI Credits**. 1 AI Credit = $0.01 USD. Code completions and Next Edit suggestions remain **free**.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .padding(.bottom, 2)
 
                 section(
-                    title: "GitHub bill  (legacy / annual request-based)",
-                    icon: "creditcard.fill",
-                    accent: .green
-                ) {
-                    formula("Σ premium_cost × $0.04")
-                    Text("Pro / Pro+ **annual** subscribers can stay on request-based billing. `premium_cost` is GitHub's per-request unit count recorded in each session's `modelMetrics.<model>.requests.cost`; `$0.04` is the per-unit overage rate. Constant: `PricingCatalog.usdPerPremiumRequest`.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Text("Reads $0.00 for monthly / Enterprise users on usage-based billing — see the AI Credits column instead.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .italic()
-                }
-
-                Divider()
-
-                section(
-                    title: "AI Credits  (default after 2026-06-01)",
+                    title: "AI Credits",
                     icon: "shippingbox.fill",
                     accent: .blue
                 ) {
@@ -186,14 +122,14 @@ private struct CostFormulaPopover: View {
                     icon: "questionmark.diamond",
                     accent: .orange
                 ) {
-                    Text("**VS Code Chat / Agent** sessions don't write token counts to disk — the extension marks `assistant.usage` events `ephemeral` and filters them out of the transcript. These records contribute **$0** to both columns; only their request counts are visible.")
+                    Text("Some VS Code Chat sessions don't write token counts or `totalNanoAiu` to disk — the extension marks `assistant.usage` events `ephemeral` and filters them out of the transcript. Those sessions are omitted from AI Credit billing stats because no billable usage data is available locally.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
             .padding(14)
         }
-        .frame(width: 380, height: 520)
+        .frame(width: 380, height: 430)
     }
 
     private var header: some View {

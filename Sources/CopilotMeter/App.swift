@@ -41,15 +41,14 @@ struct CopilotMeterApp: App {
         }
         print("byWindowByRemote (today):")
         for (key, agg) in (snap.byWindowByRemote[.today] ?? [:]) {
-            print(String(format: "  %@: requests=%d  credits=%.3f AIU",
-                         key ?? "<local>", Int(agg.requests), agg.aiCredits))
+            print(String(format: "  %@: credits=%.3f AIU",
+                         key ?? "<local>", agg.aiCredits))
         }
         print("byWindowByRemote (month):")
         for (key, agg) in (snap.byWindowByRemote[.month] ?? [:]) {
-            print(String(format: "  %@: requests=%d  credits=%.3f AIU",
-                         key ?? "<local>", Int(agg.requests), agg.aiCredits))
+            print(String(format: "  %@: credits=%.3f AIU",
+                         key ?? "<local>", agg.aiCredits))
         }
-        print("blindChatByWindow (month): \(snap.blindChatByWindow[.month] ?? 0)")
         exit(0)
     }
 
@@ -75,25 +74,17 @@ private struct MenuBarLabel: View {
 
     var body: some View {
         let today = refresher.snapshot.byWindow[.today] ?? .zero
-        let chat = refresher.snapshot.blindChatByWindow[.today] ?? 0
         let totalCredits = today.aiCredits
         let totalUsd = today.aiCreditsUsd
-        let totalRequests = Int(today.requests.rounded()) + chat
         let byRemote = refresher.snapshot.byWindowByRemote[.today] ?? [:]
         let localCredits = byRemote[nil]?.aiCredits ?? 0
-        // Per-remote chip data. Each chip carries both metrics so the
-        // formatter can pick credits when available and fall back to
-        // request count for VS-Code-Chat-only hosts (which have
-        // request_count > 0 but ai_credits_nano = NULL because GitHub
-        // doesn't emit totalNanoAiu for Chat — only for Copilot CLI).
-        let remoteEntries: [(String, Double, Int)] = byRemote
-            .compactMap { (key, value) -> (String, Double, Int)? in
+        let remoteEntries: [(String, Double)] = byRemote
+            .compactMap { (key, value) -> (String, Double)? in
                 guard let name = key else { return nil }
-                let req = Int(value.requests.rounded())
-                guard value.aiCredits > 0 || req > 0 else { return nil }
-                return (name, value.aiCredits, req)
+                guard value.aiCredits > 0 else { return nil }
+                return (name, value.aiCredits)
             }
-            .sorted { ($0.1, Double($0.2)) > ($1.1, Double($1.2)) }
+            .sorted { $0.1 > $1.1 }
         let breakdownText = remoteEntries.isEmpty ? nil : Self.breakdownString(
             localCredits: localCredits, remotes: remoteEntries
         )
@@ -139,7 +130,7 @@ private struct MenuBarLabel: View {
             }
         }
         .help(tooltip(
-            credits: totalCredits, usd: totalUsd, requests: totalRequests,
+            credits: totalCredits, usd: totalUsd,
             localCredits: localCredits, remotes: remoteEntries
         ))
         // Drive goal evaluation off the published today-credits value.
@@ -153,23 +144,15 @@ private struct MenuBarLabel: View {
     }
 
     /// Builds the compact "(L:12 host:30)" suffix shown after the credit total
-    /// when remotes are configured. Each chip is an AI-Credit count rounded
-    /// to the nearest unit. For VS-Code-Chat-only hosts (no AIU data),
-    /// the chip falls back to "N r" (the request count) so the menu bar
-    /// surfaces activity instead of an invisible "0". Up to 2 remote
-    /// chips; any extra hosts collapse into a "+N" marker so the menu
-    /// bar stays narrow.
-    private static func breakdownString(localCredits: Double, remotes: [(String, Double, Int)]) -> String {
+    /// when remotes are configured. Up to 2 remote chips are shown; any extra
+    /// hosts collapse into a "+N" marker so the menu bar stays narrow.
+    private static func breakdownString(localCredits: Double, remotes: [(String, Double)]) -> String {
         let visible = Array(remotes.prefix(2))
         let hidden = remotes.count - visible.count
         var parts: [String] = ["L:\(Formatters.compactCredits(localCredits))"]
-        for (name, c, r) in visible {
+        for (name, c) in visible {
             let short = name.count > 6 ? String(name.prefix(5)) + "…" : name
-            if c > 0 {
-                parts.append("\(short):\(Formatters.compactCredits(c))")
-            } else {
-                parts.append("\(short):\(r)r")
-            }
+            parts.append("\(short):\(Formatters.compactCredits(c))")
         }
         if hidden > 0 {
             parts.append("+\(hidden)")
@@ -177,20 +160,14 @@ private struct MenuBarLabel: View {
         return "(" + parts.joined(separator: " ") + ")"
     }
 
-    private func tooltip(credits: Double, usd: Double, requests: Int,
-                         localCredits: Double, remotes: [(String, Double, Int)]) -> String {
+    private func tooltip(credits: Double, usd: Double,
+                         localCredits: Double, remotes: [(String, Double)]) -> String {
         var lines: [String] = [
             "Today: \(Formatters.compactCredits(credits)) AI Credits  ≈ \(Formatters.compactUSD(usd))",
-            "\(requests) requests",
             "• Local: \(Formatters.compactCredits(localCredits))",
         ]
-        for (name, c, r) in remotes {
-            if c > 0 {
-                lines.append("• \(name): \(Formatters.compactCredits(c)) cr · \(r) req")
-            } else {
-                // No AIU emitted by GitHub for VS Code Chat — explain.
-                lines.append("• \(name): \(r) req (VS Code Chat — no AI Credit data)")
-            }
+        for (name, c) in remotes {
+            lines.append("• \(name): \(Formatters.compactCredits(c)) cr")
         }
         return lines.joined(separator: "\n")
     }

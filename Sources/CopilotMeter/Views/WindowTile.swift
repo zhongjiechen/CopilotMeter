@@ -6,7 +6,6 @@ import SwiftUI
 struct WindowTile: View {
     let window: TimeWindow
     let stats: UsageStats
-    let blindChat: Int
     let bySource: [UsageRecord.Source: UsageStats]
     let isSelected: Bool
     let onTap: () -> Void
@@ -36,21 +35,7 @@ struct WindowTile: View {
                         .help("USD equivalent at the post-2026-06-01 rate of $0.01 per AI Credit")
                 }
 
-                HStack(spacing: 4) {
-                    Text("\(Int(stats.requests.rounded())) req")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .monospacedDigit()
-                    Spacer(minLength: 0)
-                    if blindChat > 0 {
-                        Text("+\(blindChat) chat")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(UsageRecord.Source.vscodeChat.color)
-                            .help("\(blindChat) VS Code Chat interactions with no token data")
-                    }
-                }
-
-                SourceSplitBar(bySource: bySource, blindChat: blindChat)
+                SourceSplitBar(bySource: bySource)
                     .frame(height: 6)
                     .padding(.top, 2)
             }
@@ -72,7 +57,6 @@ struct WindowTile: View {
 /// Stacked horizontal bar showing the relative AI-Credit share of each source.
 private struct SourceSplitBar: View {
     let bySource: [UsageRecord.Source: UsageStats]
-    let blindChat: Int
 
     var body: some View {
         GeometryReader { geo in
@@ -102,14 +86,9 @@ private struct SourceSplitBar: View {
 
     private func buildSegments() -> [Segment] {
         var out: [Segment] = []
-        for src in [UsageRecord.Source.copilotCLI, .vscodeAgent, .vscodeChat] {
-            // Width by credits when we have token data; fall back to request
-            // count for chat sessions (no token data → no credits) so the bar
-            // still reflects activity.
+        for src in [UsageRecord.Source.copilotCLI, .vscodeAgent, .codingAgent] {
             let credits = (bySource[src]?.aiCredits ?? 0)
-            let reqs = (bySource[src]?.requests ?? 0)
-            let v = credits > 0 ? credits : reqs
-            if v > 0 { out.append(Segment(source: src, value: v)) }
+            if credits > 0 { out.append(Segment(source: src, value: credits)) }
         }
         return out
     }

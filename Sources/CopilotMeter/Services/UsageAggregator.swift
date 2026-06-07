@@ -4,7 +4,6 @@ import Foundation
 public struct UsageAggregator: Sendable {
     public struct DailyPoint: Equatable, Sendable {
         public let date: Date
-        public let requests: Double
         public let aiCredits: Double
     }
 
@@ -16,14 +15,13 @@ public struct UsageAggregator: Sendable {
         /// `nil` key = local, non-nil = remote host nickname.
         public var byWindowByRemote: [TimeWindow: [String?: UsageStats]]
         /// Joint host × source breakdown. Used by the RemotesStrip tooltip
-        /// so users can see e.g. "@host → Cloud Agent 211 AIU, VS Code Chat 10 req"
-        /// instead of guessing how a per-host total decomposes across sources.
+        /// so users can see e.g. "@host → Cloud Agent 211 AIU" instead of
+        /// guessing how a per-host total decomposes across sources.
         /// Inner-`nil` host key = local. This is a joint distribution; you
         /// cannot reconstruct it from the marginal `byWindowByRemote` and
         /// `byWindowBySource` aggregates above.
         public var byWindowByRemoteSource: [TimeWindow: [String?: [UsageRecord.Source: UsageStats]]]
-        public var blindChatByWindow: [TimeWindow: Int]
-        public var dailyRequests: [DailyPoint]
+        public var dailyCredits: [DailyPoint]
 
         public static let empty = Snapshot(
             generatedAt: Date(),
@@ -32,8 +30,7 @@ public struct UsageAggregator: Sendable {
             byWindowBySource: [:],
             byWindowByRemote: [:],
             byWindowByRemoteSource: [:],
-            blindChatByWindow: [:],
-            dailyRequests: []
+            dailyCredits: []
         )
     }
 
@@ -59,8 +56,6 @@ public struct UsageAggregator: Sendable {
         var byWindowBySource: [TimeWindow: [UsageRecord.Source: UsageStats]] = [:]
         var byWindowByRemote: [TimeWindow: [String?: UsageStats]] = [:]
         var byWindowByRemoteSource: [TimeWindow: [String?: [UsageRecord.Source: UsageStats]]] = [:]
-        var blindChat: [TimeWindow: Int] = [:]
-        var dailyRequests: [Date: Double] = [:]
         var dailyCredits: [Date: Double] = [:]
 
         for w in TimeWindow.allCases {
@@ -69,7 +64,6 @@ public struct UsageAggregator: Sendable {
             byWindowBySource[w] = [:]
             byWindowByRemote[w] = [:]
             byWindowByRemoteSource[w] = [:]
-            blindChat[w] = 0
         }
 
         let authoritativeCreditKeys = Set(records.compactMap { record -> CreditKey? in
@@ -79,7 +73,6 @@ public struct UsageAggregator: Sendable {
         for r in records {
             let includeEstimatedAiCredits = !(r.requestCount > 0 && authoritativeCreditKeys.contains(CreditKey(r)))
             let dayStart = calendar.startOfDay(for: r.timestamp)
-            dailyRequests[dayStart, default: 0] += r.requestCount
             // Per-record AI Credits: prefer the authoritative CLI value;
             // fall back to PricingCatalog estimate (× 100, since 1 AIU = $0.01).
             let perRecordCredits: Double
@@ -102,9 +95,6 @@ public struct UsageAggregator: Sendable {
                 byWindowBySource[w]![r.source, default: .zero].add(r, includeEstimatedAiCredits: includeEstimatedAiCredits)
                 byWindowByRemote[w]![r.remoteName, default: .zero].add(r, includeEstimatedAiCredits: includeEstimatedAiCredits)
                 byWindowByRemoteSource[w]![r.remoteName, default: [:]][r.source, default: .zero].add(r, includeEstimatedAiCredits: includeEstimatedAiCredits)
-                if r.source == .vscodeChat {
-                    blindChat[w]! += Int(r.requestCount)
-                }
             }
         }
 
@@ -114,7 +104,6 @@ public struct UsageAggregator: Sendable {
             if let d = calendar.date(byAdding: .day, value: -i, to: startOfToday) {
                 sparkline.append(DailyPoint(
                     date: d,
-                    requests: dailyRequests[d, default: 0],
                     aiCredits: dailyCredits[d, default: 0]
                 ))
             }
@@ -127,8 +116,7 @@ public struct UsageAggregator: Sendable {
             byWindowBySource: byWindowBySource,
             byWindowByRemote: byWindowByRemote,
             byWindowByRemoteSource: byWindowByRemoteSource,
-            blindChatByWindow: blindChat,
-            dailyRequests: sparkline
+            dailyCredits: sparkline
         )
     }
 }

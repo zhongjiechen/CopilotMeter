@@ -43,14 +43,10 @@ public enum TimeWindow: String, CaseIterable, Identifiable, Sendable {
 
 /// Aggregated metrics for a time window or model bucket.
 public struct UsageStats: Equatable, Sendable {
-    public var requests: Double = 0
     public var outputTokens: Int = 0
     public var inputTokens: Int = 0
     public var cacheReadTokens: Int = 0
     public var cacheWriteTokens: Int = 0
-    public var premiumCost: Double = 0
-    /// Interactions where we don't have token data (e.g., VS Code Chat)
-    public var blindInteractions: Int = 0
     /// Best-effort retail-equivalent USD cost, computed per-record using
     /// PricingCatalog and the record's model. Tokens with unknown model
     /// contribute 0.
@@ -80,22 +76,14 @@ public struct UsageStats: Equatable, Sendable {
         max(0, inputTokens - cacheReadTokens)
     }
 
-    /// What GitHub itself would bill for these premium request units at the
-    /// standard $0.04/request overage rate.
-    public var githubOverageUsd: Double {
-        PricingCatalog.githubOverageUsd(premiumCost: premiumCost)
-    }
-
     /// USD equivalent of `aiCredits` (1 AI Credit = $0.01).
     public var aiCreditsUsd: Double { aiCredits * 0.01 }
 
     public mutating func add(_ r: UsageRecord, includeEstimatedAiCredits: Bool = true) {
-        requests += r.requestCount
         outputTokens += r.outputTokens
         inputTokens += r.inputTokens
         cacheReadTokens += r.cacheReadTokens
         cacheWriteTokens += r.cacheWriteTokens
-        if let c = r.premiumCost { premiumCost += c }
         let est = PricingCatalog.estimatedCost(for: r)
         estimatedRetailUsd += est
         // Prefer the authoritative AIU from the CLI when present; otherwise

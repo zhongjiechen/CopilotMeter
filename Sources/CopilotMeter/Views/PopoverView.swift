@@ -59,8 +59,7 @@ struct PopoverView: View {
                 Divider()
                 SelectedWindowDetail(
                     window: selectedWindow,
-                    stats: refresher.snapshot.byWindow[selectedWindow] ?? .zero,
-                    blindChat: refresher.snapshot.blindChatByWindow[selectedWindow] ?? 0
+                    stats: refresher.snapshot.byWindow[selectedWindow] ?? .zero
                 )
                 RemotesStrip(
                     window: selectedWindow,
@@ -73,7 +72,7 @@ struct PopoverView: View {
                     byModel: refresher.snapshot.byWindowByModel[selectedWindow] ?? [:]
                 )
                 Divider()
-                DailySparkline(data: refresher.snapshot.dailyRequests)
+                DailySparkline(data: refresher.snapshot.dailyCredits)
                 footer
             }
             .padding(14)
@@ -121,7 +120,6 @@ struct PopoverView: View {
                 WindowTile(
                     window: w,
                     stats: refresher.snapshot.byWindow[w] ?? .zero,
-                    blindChat: refresher.snapshot.blindChatByWindow[w] ?? 0,
                     bySource: refresher.snapshot.byWindowBySource[w] ?? [:],
                     isSelected: w == selectedWindow,
                     onTap: { selectedWindow = w }
@@ -142,12 +140,12 @@ struct PopoverView: View {
                     .help(err)
             } else {
                 let all = refresher.snapshot.byWindow[.all] ?? .zero
-                Text("All-time: \(Formatters.compactCredits(all.aiCredits)) cr · \(Formatters.compactUSD(all.aiCreditsUsd)) · \(Formatters.compactDouble(all.requests)) req")
+                Text("All-time: \(Formatters.compactCredits(all.aiCredits)) AI Credits · \(Formatters.compactUSD(all.aiCreditsUsd))")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .help("All-time AI Credits / USD / request count across local + remote sources.")
+                    .help("All-time AI Credits and USD equivalent across local + remote sources.")
             }
             Spacer()
             Button {

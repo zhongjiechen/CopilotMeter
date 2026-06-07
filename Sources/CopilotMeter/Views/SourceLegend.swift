@@ -22,11 +22,11 @@ extension UsageRecord.Source {
     }
 }
 
-/// Always-visible legend explaining the three colored sources.
+/// Always-visible legend explaining billable AI Credit sources.
 struct SourceLegend: View {
     var body: some View {
         HStack(spacing: 14) {
-            ForEach([UsageRecord.Source.copilotCLI, .vscodeAgent, .vscodeChat, .codingAgent], id: \.self) { src in
+            ForEach([UsageRecord.Source.copilotCLI, .vscodeAgent, .codingAgent], id: \.self) { src in
                 HStack(spacing: 4) {
                     Circle().fill(src.color).frame(width: 8, height: 8)
                     Text(src.shortLabel)

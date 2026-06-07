@@ -44,19 +44,14 @@ public struct ModelPrice: Sendable, Equatable {
 /// `claude-sonnet-4.6`, …) to its **official GitHub AI Credit** rate from
 /// <https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing>.
 ///
-/// **Billing landscape after 2026-06-01**: Copilot moved from a flat
-/// "premium request" subscription model to **usage-based billing in GitHub
-/// AI Credits**. 1 AI credit = $0.01 USD, so the per-million-token prices
-/// below are simultaneously:
-///   - exact GitHub bill numbers (for users on usage-based billing)
-///   - retail-USD equivalents (since 1 credit = $0.01)
+/// **Billing landscape after 2026-06-01**: Copilot moved to
+/// **usage-based billing in GitHub AI Credits**. 1 AI credit = $0.01 USD,
+/// so the per-million-token prices below are simultaneously:
+///   - GitHub AI Credit bill numbers
+///   - retail-USD equivalents
 ///
 /// Code completions and Next Edit suggestions remain **free** and are not
 /// billed in AI credits.
-///
-/// Legacy Pro / Pro+ annual subscribers who opted to remain on
-/// request-based billing still pay `$0.04 per premium-request unit`; that
-/// constant is kept for backward compatibility.
 ///
 /// Pricing constants reflect the published table as of 2026-05. Keep this
 /// file in sync with the GitHub docs link above when rates change.
@@ -69,11 +64,6 @@ public enum PricingCatalog {
         c.timeZone = TimeZone(identifier: "UTC")
         return Calendar(identifier: .gregorian).date(from: c) ?? Date()
     }()
-
-    /// Legacy: USD per "premium request unit" for annual-plan subscribers who
-    /// stayed on request-based billing. Was the GitHub overage rate across
-    /// Pro / Pro+ / Business / Enterprise.
-    public static let usdPerPremiumRequest: Double = 0.04
 
     // MARK: - OpenAI
 
@@ -150,13 +140,6 @@ public enum PricingCatalog {
             cacheRead: record.cacheReadTokens,
             cacheWrite: record.cacheWriteTokens
         )
-    }
-
-    /// What GitHub itself would bill, in USD, for the given accumulated
-    /// premium-request units. Legacy: only applies to annual-plan
-    /// subscribers who stayed on request-based billing after 2026-06-01.
-    public static func githubOverageUsd(premiumCost: Double) -> Double {
-        premiumCost * usdPerPremiumRequest
     }
 
     private static func canonical(_ model: String) -> String {

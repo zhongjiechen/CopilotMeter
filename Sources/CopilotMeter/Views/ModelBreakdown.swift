@@ -7,10 +7,9 @@ struct ModelBreakdown: View {
 
     private var topModels: [(String, UsageStats)] {
         byModel
-            .filter { $0.value.aiCredits > 0 || $0.value.requests > 0 || $0.value.outputTokens > 0 }
+            .filter { $0.value.aiCredits > 0 || $0.value.outputTokens > 0 }
             .sorted {
                 if $0.value.aiCredits != $1.value.aiCredits { return $0.value.aiCredits > $1.value.aiCredits }
-                if $0.value.requests != $1.value.requests { return $0.value.requests > $1.value.requests }
                 return $0.value.outputTokens > $1.value.outputTokens
             }
             .prefix(6)
@@ -114,9 +113,6 @@ private struct FlowingMetrics: View {
 
     private func composedParts() -> [String] {
         var parts: [String] = []
-        if stats.requests > 0 {
-            parts.append("\(Int(stats.requests.rounded())) req")
-        }
         if stats.outputTokens > 0 {
             parts.append("\(Formatters.compactInt(stats.outputTokens)) out")
         }
