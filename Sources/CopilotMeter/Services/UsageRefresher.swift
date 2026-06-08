@@ -351,6 +351,12 @@ enum RefreshWorker {
             phaseErrors.append(PathScrubber.scrub("Remote CLI resume precedence: \(error)"))
         }
 
+        do {
+            try resetRemoteExtractorOffsetsForPersistentResumeIfNeeded(cache: cache)
+        } catch {
+            phaseErrors.append(PathScrubber.scrub("Remote persistent resume: \(error)"))
+        }
+
         let parser = EventsJSONLParser()
         let localChatReader = VSCodeChatReader()
         let localTranscriptsReader = VSCodeChatTranscriptsReader(cache: cache)
@@ -600,15 +606,43 @@ enum RefreshWorker {
         cache.markMigrationDone(cliResumePrecedenceRemoteResetKey)
     }
 
+    static let persistentResumeRemoteResetKey = "v030_persistent_resume_remote_offsets"
+
+    /// v0.1.30 companion to CacheStore's persistent-resume migration. Reset
+    /// remote extractor offsets once so old `session.resume` markers are
+    /// re-streamed from offset 0 and recorded in the sticky `session_resume`
+    /// table, then sessions are reclassified correctly.
+    static func resetRemoteExtractorOffsetsForPersistentResumeIfNeeded(
+        cache: CacheStore,
+        remotesRoot: URL = remoteMirrorsRoot()
+    ) throws {
+        guard !cache.migrationDone(persistentResumeRemoteResetKey) else { return }
+
+        if let contents = try? FileManager.default.contentsOfDirectory(
+            at: remotesRoot,
+            includingPropertiesForKeys: nil
+        ) {
+            for dir in contents {
+                let offsetsPath = dir.appendingPathComponent("offsets.json")
+                if FileManager.default.fileExists(atPath: offsetsPath.path) {
+                    try FileManager.default.removeItem(at: offsetsPath)
+                }
+            }
+        }
+
+        cache.markMigrationDone(persistentResumeRemoteResetKey)
+    }
+
     static func classifySession(
         hostType: String?,
         isVSCodeSession: Bool,
-        hasCliResume: Bool,
-        existingSource: UsageRecord.Source?
+        hasCliResume: Bool
     ) -> UsageRecord.Source {
-        if hasCliResume { return .copilotCLI }
+        // `isVSCodeSession` already excludes `copilotcli` rows, so a true value
+        // here means a genuine VS Code agent session — that wins even over a
+        // resume marker. Otherwise a terminal resume means CLI usage.
         if isVSCodeSession { return .vscodeAgent }
-        if hostType == "github", existingSource == .copilotCLI { return .copilotCLI }
+        if hasCliResume { return .copilotCLI }
         if hostType == "github" { return .codingAgent }
         return .copilotCLI
     }
@@ -619,8 +653,10 @@ enum RefreshWorker {
     /// Classification of each event.jsonl session uses these signals:
     ///
     ///   1. session_id present in the remote's VS Code Copilot Chat DB
-    ///      `sessions` table → VS Code Copilot Chat in agent mode. → `.vscodeAgent`
-    ///   2. any `session.resume` event → manually resumed terminal CLI usage.
+    ///      `sessions` table with `agent_name != copilotcli` → genuine VS Code
+    ///      Copilot agent session. → `.vscodeAgent`
+    ///   2. any `session.resume` event (sticky, persisted) → manually resumed
+    ///      terminal CLI usage. → `.copilotCLI`
     ///   3. `context.hostType == "github"` without a CLI resume → Cloud Agent.
     ///   4. Otherwise → terminal `copilot` CLI. → `.copilotCLI`
     private static func ingestExtractedEvents(
@@ -645,6 +681,9 @@ enum RefreshWorker {
             case .sessionResumed(let sid):
                 seenSessions.insert(sid)
                 sessionHasCliResume.insert(sid)
+                // Persist immediately so the resume signal survives future
+                // incremental syncs where this marker sits before the offset.
+                try cache.markCliResume(sessionId: sid, remoteName: remoteName)
             case .assistantMessage(let sid, _, _, _, _),
                  .sessionShutdownRow(let sid, _, _, _, _, _, _, _, _),
                  .sessionEnded(let sid):
@@ -665,12 +704,12 @@ enum RefreshWorker {
         }
 
         func classify(_ sid: String) -> UsageRecord.Source {
-            let existing = try? cache.sourceForSession(sessionId: sid, remoteName: remoteName)
+            let resumed = sessionHasCliResume.contains(sid)
+                || cache.hasCliResume(sessionId: sid, remoteName: remoteName)
             return classifySession(
                 hostType: sessionHostType[sid],
                 isVSCodeSession: remoteVsCodeIds.contains(sid),
-                hasCliResume: sessionHasCliResume.contains(sid),
-                existingSource: existing ?? nil
+                hasCliResume: resumed
             )
         }
 
@@ -801,11 +840,15 @@ enum RefreshWorker {
                 remoteName: remoteName
             )
 
+            if parsed.sessionResumed {
+                try cache.markCliResume(sessionId: parsed.sessionId, remoteName: remoteName)
+            }
+
             let finalSource = classifySession(
                 hostType: parsed.hostType,
                 isVSCodeSession: vsCodeIds.contains(sessionId),
-                hasCliResume: parsed.sessionResumed,
-                existingSource: try? cache.sourceForSession(sessionId: sessionId, remoteName: remoteName)
+                hasCliResume: parsed.sessionResumed
+                    || cache.hasCliResume(sessionId: parsed.sessionId, remoteName: remoteName)
             )
 
             // Backfill: if we now know this session's selectedModel, sweep any

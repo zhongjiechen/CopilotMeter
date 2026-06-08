@@ -44,6 +44,8 @@ No background daemons, no helper tools. The whole app is one Swift binary linked
 
 ## 📣 News
 
+- **v0.1.29** — **Stop the CLI/Cloud-Agent/VS-Code source flip-flop.** Terminal-resumed sessions kept reverting to VS Code Agent / Cloud Agent on incremental syncs because the `session.resume` marker sits before the byte offset and wasn't re-read. The resume signal is now persisted in a sticky `session_resume` table, and the VS Code session lookup excludes `agent_name = copilotcli` rows (the terminal CLI also registers there). A one-time rescan reclassifies existing data. Net effect: a large terminal-driven session no longer counts as Cloud Agent or VS Code Agent.
+
 - **v0.1.28** — **Classify terminal-resumed sessions as CLI.** Sessions that originated in a GitHub-hosted agent environment but were later continued with `copilot --resume` in a terminal are now attributed to **Copilot CLI**, even when their original `session.start.context.hostType` is `github` or the session id also appears in the VS Code database. This keeps the source split aligned with how the work was actually driven locally.
 
 - **v0.1.27** — **AI Credits only.** Removed the legacy GitHub bill / request-based billing column and all visible request-count stats. CopilotMeter now presents usage strictly in GitHub AI Credits plus the USD equivalent, while keeping token/cache details only where they explain AI Credit cost. Sources without local token or `totalNanoAiu` data are omitted from billing stats instead of falling back to request counts.

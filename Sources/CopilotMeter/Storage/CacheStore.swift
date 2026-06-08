@@ -69,11 +69,23 @@ public final class CacheStore {
                 value TEXT
             );
         """)
+        // Sticky record of sessions that were ever resumed from a terminal
+        // (`session.resume` in events.jsonl). `remote_name` uses '' for local
+        // so the composite primary key never contains NULL. Presence of a row
+        // means "this session is terminal CLI usage" and is never unset.
+        try db.exec("""
+            CREATE TABLE IF NOT EXISTS session_resume (
+                session_id  TEXT NOT NULL,
+                remote_name TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (session_id, remote_name)
+            );
+        """)
         try migrationV016SplitTranscriptAgent()
         try migrationV017DedupeShutdownRows()
         try migrationV019ShutdownEventIds()
         try migrationV028CliResumeClassification()
         try migrationV029CliResumePrecedence()
+        try migrationV030PersistentResumeFlag()
     }
 
     /// v0.1.6 migration: PR #11 ingested every transcript user.message as
@@ -264,7 +276,48 @@ public final class CacheStore {
         )
     }
 
-    /// Returns true iff the named migration has been recorded as done.
+    /// v0.1.30 migration: classification used to depend on re-reading
+    /// `session.resume` markers on every sync, but on incremental syncs those
+    /// markers sit before the byte offset and aren't re-emitted, so sessions
+    /// flipped back to VS Code Agent / Cloud Agent. We now persist the resume
+    /// signal in `session_resume`. Reset events.jsonl file_state once so every
+    /// session is rescanned from offset 0, its resume markers re-seen and
+    /// persisted, and its rows reclassified.
+    private func migrationV030PersistentResumeFlag() throws {
+        var already = false
+        try db.query("SELECT value FROM schema_meta WHERE key = ?",
+                     bindings: ["v030_persistent_resume_flag_cache"]) { row in
+            already = (row.string(0) ?? "") == "done"
+        }
+        if already { return }
+
+        try db.execute(
+            "DELETE FROM file_state WHERE file_path LIKE '%/.copilot/session-state/%'"
+        )
+        try db.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+            bindings: ["v030_persistent_resume_flag_cache", "done"]
+        )
+    }
+
+    /// Records that a session was resumed from a terminal (sticky; never unset).
+    /// `remoteName == nil` is stored as '' so the composite PK never has a NULL.
+    public func markCliResume(sessionId: String, remoteName: String?) throws {
+        try db.execute(
+            "INSERT OR IGNORE INTO session_resume (session_id, remote_name) VALUES (?, ?)",
+            bindings: [sessionId, remoteName ?? ""]
+        )
+    }
+
+    /// True iff a `session.resume` was ever observed for this (session, host).
+    public func hasCliResume(sessionId: String, remoteName: String?) -> Bool {
+        var found = false
+        try? db.query(
+            "SELECT 1 FROM session_resume WHERE session_id = ? AND remote_name = ? LIMIT 1",
+            bindings: [sessionId, remoteName ?? ""]
+        ) { _ in found = true }
+        return found
+    }
     /// Used by `UsageRefresher` to also wipe out remote `offsets.json`
     /// caches on the same one-shot upgrade path.
     public func migrationDone(_ key: String) -> Bool {

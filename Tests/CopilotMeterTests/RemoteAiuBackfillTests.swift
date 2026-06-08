@@ -126,22 +126,22 @@ final class RemoteAiuBackfillTests: XCTestCase {
             RefreshWorker.classifySession(
                 hostType: "github",
                 isVSCodeSession: false,
-                hasCliResume: true,
-                existingSource: nil
+                hasCliResume: true
             ),
             .copilotCLI
         )
     }
 
-    func testCliResumeWinsOverVSCodeDbPresence() {
+    func testGenuineVSCodeSessionStaysVSCodeAgentEvenWithResume() {
+        // After excluding copilotcli rows, isVSCodeSession=true means a genuine
+        // VS Code agent session, which must stay VS Code Agent.
         XCTAssertEqual(
             RefreshWorker.classifySession(
                 hostType: "github",
                 isVSCodeSession: true,
-                hasCliResume: true,
-                existingSource: nil
+                hasCliResume: true
             ),
-            .copilotCLI
+            .vscodeAgent
         )
     }
 
@@ -150,23 +150,59 @@ final class RemoteAiuBackfillTests: XCTestCase {
             RefreshWorker.classifySession(
                 hostType: "github",
                 isVSCodeSession: false,
-                hasCliResume: false,
-                existingSource: nil
+                hasCliResume: false
             ),
             .codingAgent
         )
     }
 
-    func testExistingCliClassificationPersistsWhenIncrementalChunkHasNoResumeMarker() {
+    func testPersistedResumeFlagSurvivesIncrementalSyncWithoutMarker() throws {
+        let temp = try temporaryDirectory()
+        let cache = try CacheStore(path: temp.appendingPathComponent("cache.db").path)
+
+        // First sync observed a resume and persisted it.
+        try cache.markCliResume(sessionId: "9dbf", remoteName: "l40")
+
+        // A later incremental sync has no resume marker in its chunk, but the
+        // persisted flag must keep the session classified as CLI even though it
+        // is github-hosted and present in the VS Code DB.
+        XCTAssertTrue(cache.hasCliResume(sessionId: "9dbf", remoteName: "l40"))
         XCTAssertEqual(
             RefreshWorker.classifySession(
                 hostType: "github",
                 isVSCodeSession: false,
-                hasCliResume: false,
-                existingSource: .copilotCLI
+                hasCliResume: cache.hasCliResume(sessionId: "9dbf", remoteName: "l40")
             ),
             .copilotCLI
         )
+
+        // Local vs remote and per-remote isolation.
+        XCTAssertFalse(cache.hasCliResume(sessionId: "9dbf", remoteName: nil))
+        XCTAssertFalse(cache.hasCliResume(sessionId: "9dbf", remoteName: "gh200_0"))
+        try cache.markCliResume(sessionId: "local-sess", remoteName: nil)
+        XCTAssertTrue(cache.hasCliResume(sessionId: "local-sess", remoteName: nil))
+    }
+
+    func testKnownSessionIdsExcludesCopilotcli() throws {
+        let temp = try temporaryDirectory()
+        let dbPath = temp.appendingPathComponent("session-store.db").path
+        let db = try SQLite(path: dbPath, readOnly: false)
+        try db.exec("""
+            CREATE TABLE sessions (
+                id TEXT, agent_name TEXT, host_type TEXT
+            );
+        """)
+        try db.execute("INSERT INTO sessions (id, agent_name, host_type) VALUES (?, ?, ?)",
+                       bindings: ["vscode-1", "GitHub Copilot Chat", "vscode"])
+        try db.execute("INSERT INTO sessions (id, agent_name, host_type) VALUES (?, ?, ?)",
+                       bindings: ["cli-1", "copilotcli", "vscode"])
+        try db.execute("INSERT INTO sessions (id, agent_name, host_type) VALUES (?, ?, ?)",
+                       bindings: ["cli-2", " CopilotCLI ", "vscode"])
+
+        let ids = VSCodeChatReader(path: dbPath).knownSessionIds()
+        XCTAssertTrue(ids.contains("vscode-1"))
+        XCTAssertFalse(ids.contains("cli-1"))
+        XCTAssertFalse(ids.contains("cli-2"))
     }
 
     func testRemoteAiuBackfillDeletesOffsetsExactlyOnce() throws {
@@ -299,6 +335,38 @@ final class RemoteAiuBackfillTests: XCTestCase {
         try Data(#"{"session-a":789}"#.utf8).write(to: l40Offsets)
 
         try RefreshWorker.resetRemoteExtractorOffsetsForCliResumePrecedenceIfNeeded(
+            cache: cache,
+            remotesRoot: remotesRoot
+        )
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: l40Offsets.path))
+    }
+
+    func testPersistentResumeMigrationDeletesOffsetsExactlyOnce() throws {
+        let temp = try temporaryDirectory()
+        let cache = try CacheStore(path: temp.appendingPathComponent("cache.db").path)
+        let remotesRoot = temp.appendingPathComponent("remotes")
+        let l40Offsets = remotesRoot
+            .appendingPathComponent("l40")
+            .appendingPathComponent("offsets.json")
+
+        try FileManager.default.createDirectory(
+            at: l40Offsets.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(#"{"session-a":123}"#.utf8).write(to: l40Offsets)
+
+        try RefreshWorker.resetRemoteExtractorOffsetsForPersistentResumeIfNeeded(
+            cache: cache,
+            remotesRoot: remotesRoot
+        )
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: l40Offsets.path))
+        XCTAssertTrue(cache.migrationDone(RefreshWorker.persistentResumeRemoteResetKey))
+
+        try Data(#"{"session-a":789}"#.utf8).write(to: l40Offsets)
+
+        try RefreshWorker.resetRemoteExtractorOffsetsForPersistentResumeIfNeeded(
             cache: cache,
             remotesRoot: remotesRoot
         )

@@ -52,7 +52,13 @@ public final class VSCodeChatReader {
         guard let db = try? SQLite(path: path, readOnly: true) else { return [] }
         var ids: Set<String> = []
         do {
-            try db.query("SELECT id FROM sessions") { row in
+            // Exclude `copilotcli` rows: the terminal CLI registers a session
+            // record here too, but those write events.jsonl and are CLI/agent
+            // sessions, not VS Code Copilot Chat sessions. Treating them as
+            // VS Code sessions would misclassify terminal CLI usage.
+            try db.query(
+                "SELECT id FROM sessions WHERE lower(trim(COALESCE(agent_name, ''))) != 'copilotcli'"
+            ) { row in
                 if let id = row.string(0) { ids.insert(id) }
             }
         } catch {
