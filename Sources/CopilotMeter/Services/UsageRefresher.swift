@@ -633,32 +633,23 @@ enum RefreshWorker {
         cache.markMigrationDone(persistentResumeRemoteResetKey)
     }
 
-    static func classifySession(
-        hostType: String?,
-        isVSCodeSession: Bool,
-        hasCliResume: Bool
-    ) -> UsageRecord.Source {
-        // `isVSCodeSession` already excludes `copilotcli` rows, so a true value
-        // here means a genuine VS Code agent session — that wins even over a
-        // resume marker. Otherwise a terminal resume means CLI usage.
-        if isVSCodeSession { return .vscodeAgent }
-        if hasCliResume { return .copilotCLI }
-        if hostType == "github" { return .codingAgent }
-        return .copilotCLI
+    /// Source classification for a session whose events.jsonl lives in a
+    /// machine's `~/.copilot/session-state`. Such a session was run by a
+    /// `copilot` process on that machine, so it is terminal CLI usage unless it
+    /// is a genuine VS Code Copilot agent session (registered in the VS Code
+    /// chat DB with `agent_name != copilotcli`). `hostType=github` is NOT used:
+    /// it only reflects an agent-worktree git context, not cloud dispatch, and
+    /// genuinely cloud-dispatched Coding Agent sessions never write here.
+    static func classifySession(isVSCodeSession: Bool) -> UsageRecord.Source {
+        isVSCodeSession ? .vscodeAgent : .copilotCLI
     }
 
     /// Hydrates `UsageRecord`s from the JSONL stream returned by
     /// `RemoteSSHExtractor.extract`, then inserts them.
     ///
-    /// Classification of each event.jsonl session uses these signals:
-    ///
-    ///   1. session_id present in the remote's VS Code Copilot Chat DB
-    ///      `sessions` table with `agent_name != copilotcli` → genuine VS Code
-    ///      Copilot agent session. → `.vscodeAgent`
-    ///   2. any `session.resume` event (sticky, persisted) → manually resumed
-    ///      terminal CLI usage. → `.copilotCLI`
-    ///   3. `context.hostType == "github"` without a CLI resume → Cloud Agent.
-    ///   4. Otherwise → terminal `copilot` CLI. → `.copilotCLI`
+    /// Classification: a session present in the remote's VS Code Copilot Chat
+    /// DB `sessions` table with `agent_name != copilotcli` → `.vscodeAgent`
+    /// (sticky). Everything else in session-state is terminal CLI → `.copilotCLI`.
     private static func ingestExtractedEvents(
         _ events: [RemoteSSHExtractor.ExtractedEvent],
         into cache: CacheStore,
@@ -704,13 +695,15 @@ enum RefreshWorker {
         }
 
         func classify(_ sid: String) -> UsageRecord.Source {
-            let resumed = sessionHasCliResume.contains(sid)
-                || cache.hasCliResume(sessionId: sid, remoteName: remoteName)
-            return classifySession(
-                hostType: sessionHostType[sid],
-                isVSCodeSession: remoteVsCodeIds.contains(sid),
-                hasCliResume: resumed
-            )
+            let isVSCode = remoteVsCodeIds.contains(sid)
+                || cache.isVSCodeSessionKnown(sessionId: sid, remoteName: remoteName)
+            return classifySession(isVSCodeSession: isVSCode)
+        }
+
+        // Persist VS Code membership stickily so a transient DB read failure on
+        // a later sync cannot downgrade a known VS Code session to CLI.
+        for sid in seenSessions where remoteVsCodeIds.contains(sid) {
+            try cache.markVSCodeSession(sessionId: sid, remoteName: remoteName)
         }
 
         for sid in seenSessions {
@@ -844,12 +837,12 @@ enum RefreshWorker {
                 try cache.markCliResume(sessionId: parsed.sessionId, remoteName: remoteName)
             }
 
-            let finalSource = classifySession(
-                hostType: parsed.hostType,
-                isVSCodeSession: vsCodeIds.contains(sessionId),
-                hasCliResume: parsed.sessionResumed
-                    || cache.hasCliResume(sessionId: parsed.sessionId, remoteName: remoteName)
-            )
+            let isVSCode = vsCodeIds.contains(sessionId)
+                || cache.isVSCodeSessionKnown(sessionId: parsed.sessionId, remoteName: remoteName)
+            if vsCodeIds.contains(sessionId) {
+                try cache.markVSCodeSession(sessionId: parsed.sessionId, remoteName: remoteName)
+            }
+            let finalSource = classifySession(isVSCodeSession: isVSCode)
 
             // Backfill: if we now know this session's selectedModel, sweep any
             // previously-ingested "unknown" message rows for it. This recovers

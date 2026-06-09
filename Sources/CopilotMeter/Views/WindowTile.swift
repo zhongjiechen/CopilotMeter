@@ -86,7 +86,7 @@ private struct SourceSplitBar: View {
 
     private func buildSegments() -> [Segment] {
         var out: [Segment] = []
-        for src in [UsageRecord.Source.copilotCLI, .vscodeAgent, .codingAgent] {
+        for src in [UsageRecord.Source.copilotCLI, .vscodeAgent] {
             let credits = (bySource[src]?.aiCredits ?? 0)
             if credits > 0 { out.append(Segment(source: src, value: credits)) }
         }

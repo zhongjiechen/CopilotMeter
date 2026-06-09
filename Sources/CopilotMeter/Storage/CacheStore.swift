@@ -80,12 +80,25 @@ public final class CacheStore {
                 PRIMARY KEY (session_id, remote_name)
             );
         """)
+        // Sticky record of sessions known to be genuine VS Code Copilot agent
+        // sessions (present in the VS Code chat DB with agent_name != copilotcli).
+        // Persisted so a transient VS Code DB read failure on one sync cannot
+        // flip a known VS Code session back to CLI. `remote_name` uses '' for
+        // local. Membership only ever grows.
+        try db.exec("""
+            CREATE TABLE IF NOT EXISTS vscode_session (
+                session_id  TEXT NOT NULL,
+                remote_name TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (session_id, remote_name)
+            );
+        """)
         try migrationV016SplitTranscriptAgent()
         try migrationV017DedupeShutdownRows()
         try migrationV019ShutdownEventIds()
         try migrationV028CliResumeClassification()
         try migrationV029CliResumePrecedence()
         try migrationV030PersistentResumeFlag()
+        try migrationV031RetireCodingAgentHeuristic()
     }
 
     /// v0.1.6 migration: PR #11 ingested every transcript user.message as
@@ -298,6 +311,61 @@ public final class CacheStore {
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
             bindings: ["v030_persistent_resume_flag_cache", "done"]
         )
+    }
+
+    /// v0.1.31 migration: retire the `hostType == "github"` → Cloud Agent
+    /// heuristic. Sessions present in a machine's `~/.copilot/session-state`
+    /// were run by a `copilot` process ON that machine — i.e. terminal CLI (or
+    /// VS Code agent if registered in the VS Code chat DB). `hostType=github`
+    /// only reflects that the repo/worktree is a GitHub agent worktree, not
+    /// that the session was cloud-dispatched (a genuine cloud agent's
+    /// events.jsonl lives on GitHub's infra, never in local session-state).
+    /// `codingAgent` is the ONLY label ever assigned from that heuristic, so
+    /// flipping every such row to `copilotCLI` is safe and idempotent. Also
+    /// seed `vscode_session` from existing `vscodeAgent` rows so the VS Code
+    /// signal is sticky and a transient DB read failure can't downgrade them.
+    private func migrationV031RetireCodingAgentHeuristic() throws {
+        var already = false
+        try db.query("SELECT value FROM schema_meta WHERE key = ?",
+                     bindings: ["v031_retire_coding_agent_cache"]) { row in
+            already = (row.string(0) ?? "") == "done"
+        }
+        if already { return }
+
+        try db.execute(
+            "INSERT OR IGNORE INTO vscode_session (session_id, remote_name) SELECT DISTINCT session_id, IFNULL(remote_name, '') FROM records WHERE source = ?",
+            bindings: [UsageRecord.Source.vscodeAgent.rawValue]
+        )
+        try db.execute(
+            "UPDATE records SET source = ? WHERE source = ?",
+            bindings: [
+                UsageRecord.Source.copilotCLI.rawValue,
+                UsageRecord.Source.codingAgent.rawValue,
+            ]
+        )
+        try db.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+            bindings: ["v031_retire_coding_agent_cache", "done"]
+        )
+    }
+
+    /// Records that a session is a genuine VS Code Copilot agent session
+    /// (sticky; never unset). `remoteName == nil` is stored as ''.
+    public func markVSCodeSession(sessionId: String, remoteName: String?) throws {
+        try db.execute(
+            "INSERT OR IGNORE INTO vscode_session (session_id, remote_name) VALUES (?, ?)",
+            bindings: [sessionId, remoteName ?? ""]
+        )
+    }
+
+    /// True iff this (session, host) was ever observed as a VS Code agent session.
+    public func isVSCodeSessionKnown(sessionId: String, remoteName: String?) -> Bool {
+        var found = false
+        try? db.query(
+            "SELECT 1 FROM vscode_session WHERE session_id = ? AND remote_name = ? LIMIT 1",
+            bindings: [sessionId, remoteName ?? ""]
+        ) { _ in found = true }
+        return found
     }
 
     /// Records that a session was resumed from a terminal (sticky; never unset).

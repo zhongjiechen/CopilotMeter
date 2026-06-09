@@ -121,66 +121,80 @@ final class RemoteAiuBackfillTests: XCTestCase {
         XCTAssertGreaterThan(snapshot.byWindow[.today]?.estimatedRetailUsd ?? 0, 0)
     }
 
-    func testGithubHostedSessionWithCliResumeClassifiesAsCLI() {
+    func testSessionStateGithubSessionClassifiesAsCLINotCloudAgent() {
+        // hostType=github is no longer a Cloud Agent signal: a session in
+        // session-state was run by copilot on the machine = terminal CLI.
         XCTAssertEqual(
-            RefreshWorker.classifySession(
-                hostType: "github",
-                isVSCodeSession: false,
-                hasCliResume: true
-            ),
+            RefreshWorker.classifySession(isVSCodeSession: false),
             .copilotCLI
         )
     }
 
-    func testGenuineVSCodeSessionStaysVSCodeAgentEvenWithResume() {
-        // After excluding copilotcli rows, isVSCodeSession=true means a genuine
-        // VS Code agent session, which must stay VS Code Agent.
+    func testGenuineVSCodeSessionClassifiesAsVSCodeAgent() {
         XCTAssertEqual(
-            RefreshWorker.classifySession(
-                hostType: "github",
-                isVSCodeSession: true,
-                hasCliResume: true
-            ),
+            RefreshWorker.classifySession(isVSCodeSession: true),
             .vscodeAgent
         )
     }
 
-    func testGithubHostedSessionWithoutCliResumeClassifiesAsCloudAgent() {
-        XCTAssertEqual(
-            RefreshWorker.classifySession(
-                hostType: "github",
-                isVSCodeSession: false,
-                hasCliResume: false
-            ),
-            .codingAgent
-        )
-    }
-
-    func testPersistedResumeFlagSurvivesIncrementalSyncWithoutMarker() throws {
+    func testStickyVSCodeMembershipSurvivesDbUnavailability() throws {
         let temp = try temporaryDirectory()
         let cache = try CacheStore(path: temp.appendingPathComponent("cache.db").path)
 
-        // First sync observed a resume and persisted it.
-        try cache.markCliResume(sessionId: "9dbf", remoteName: "l40")
+        // A sync that successfully read the VS Code DB marks the session sticky.
+        try cache.markVSCodeSession(sessionId: "vs-1", remoteName: "l40")
+        XCTAssertTrue(cache.isVSCodeSessionKnown(sessionId: "vs-1", remoteName: "l40"))
 
-        // A later incremental sync has no resume marker in its chunk, but the
-        // persisted flag must keep the session classified as CLI even though it
-        // is github-hosted and present in the VS Code DB.
-        XCTAssertTrue(cache.hasCliResume(sessionId: "9dbf", remoteName: "l40"))
-        XCTAssertEqual(
-            RefreshWorker.classifySession(
-                hostType: "github",
-                isVSCodeSession: false,
-                hasCliResume: cache.hasCliResume(sessionId: "9dbf", remoteName: "l40")
-            ),
-            .copilotCLI
-        )
+        // A later sync where the DB is unavailable (not in the current id set)
+        // must still classify it as VS Code Agent via the sticky flag.
+        let isVSCodeNow = false || cache.isVSCodeSessionKnown(sessionId: "vs-1", remoteName: "l40")
+        XCTAssertEqual(RefreshWorker.classifySession(isVSCodeSession: isVSCodeNow), .vscodeAgent)
 
         // Local vs remote and per-remote isolation.
-        XCTAssertFalse(cache.hasCliResume(sessionId: "9dbf", remoteName: nil))
-        XCTAssertFalse(cache.hasCliResume(sessionId: "9dbf", remoteName: "gh200_0"))
-        try cache.markCliResume(sessionId: "local-sess", remoteName: nil)
-        XCTAssertTrue(cache.hasCliResume(sessionId: "local-sess", remoteName: nil))
+        XCTAssertFalse(cache.isVSCodeSessionKnown(sessionId: "vs-1", remoteName: nil))
+        XCTAssertFalse(cache.isVSCodeSessionKnown(sessionId: "vs-1", remoteName: "gh200_0"))
+    }
+
+    func testRetireCodingAgentMigrationFlipsRowsToCLI() throws {
+        let temp = try temporaryDirectory()
+        let dbPath = temp.appendingPathComponent("cache.db").path
+        // Seed a codingAgent row and a vscodeAgent row using a first CacheStore,
+        // then reopen to trigger the migration on init.
+        do {
+            let cache = try CacheStore(path: dbPath)
+            try cache.insertRecord(
+                UsageRecord(
+                    timestamp: Date(timeIntervalSince1970: 1_780_000_000),
+                    sessionId: "cloud-1", messageId: "shutdown:1",
+                    source: .codingAgent, model: "gpt-5.5",
+                    outputTokens: 0, inputTokens: 1000, cacheReadTokens: 0,
+                    cacheWriteTokens: 0, requestCount: 0, premiumCost: nil,
+                    aiCreditsNano: 5_000_000_000, remoteName: "l40"
+                ), kind: .shutdown)
+            try cache.insertRecord(
+                UsageRecord(
+                    timestamp: Date(timeIntervalSince1970: 1_780_000_000),
+                    sessionId: "vs-1", messageId: "m1",
+                    source: .vscodeAgent, model: "GitHub Copilot Chat",
+                    outputTokens: 0, inputTokens: 0, cacheReadTokens: 0,
+                    cacheWriteTokens: 0, requestCount: 1, premiumCost: nil,
+                    remoteName: "l40"
+                ), kind: .message)
+            // Simulate a pre-v031 cache by clearing the migration flag.
+            try SQLite(path: dbPath, readOnly: false)
+                .execute("DELETE FROM schema_meta WHERE key = ?",
+                         bindings: ["v031_retire_coding_agent_cache"])
+        }
+
+        // Reopen → migration runs.
+        let cache = try CacheStore(path: dbPath)
+        let records = try cache.allRecords()
+        let cloud = records.first { $0.sessionId == "cloud-1" }
+        let vs = records.first { $0.sessionId == "vs-1" }
+        XCTAssertEqual(cloud?.source, .copilotCLI)       // codingAgent → CLI
+        XCTAssertEqual(vs?.source, .vscodeAgent)         // vscodeAgent untouched
+        // vscodeAgent row seeded into the sticky table.
+        XCTAssertTrue(cache.isVSCodeSessionKnown(sessionId: "vs-1", remoteName: "l40"))
     }
 
     func testKnownSessionIdsExcludesCopilotcli() throws {
