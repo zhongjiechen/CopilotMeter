@@ -79,21 +79,15 @@ public struct UsageStats: Equatable, Sendable {
     /// USD equivalent of `aiCredits` (1 AI Credit = $0.01).
     public var aiCreditsUsd: Double { aiCredits * 0.01 }
 
-    public mutating func add(_ r: UsageRecord, includeEstimatedAiCredits: Bool = true) {
+    public mutating func add(_ r: UsageRecord, credits: Double, isAuthoritative: Bool) {
         outputTokens += r.outputTokens
         inputTokens += r.inputTokens
         cacheReadTokens += r.cacheReadTokens
         cacheWriteTokens += r.cacheWriteTokens
-        let est = PricingCatalog.estimatedCost(for: r)
-        estimatedRetailUsd += est
-        // Prefer the authoritative AIU from the CLI when present; otherwise
-        // back-fill from the token-based estimate (1 AIU = $0.01 USD, so
-        // est USD × 100 = AIU).
-        if let nano = r.aiCreditsNano {
-            aiCredits += Double(nano) / 1_000_000_000.0
-            aiCreditsAuthoritativeRows += 1
-        } else if includeEstimatedAiCredits {
-            aiCredits += est * 100.0
-        }
+        // `estimatedRetailUsd` stays a pure PricingCatalog figure for the
+        // separate "retail USD" display, independent of the AI Credit math.
+        estimatedRetailUsd += PricingCatalog.estimatedCost(for: r)
+        aiCredits += credits
+        if isAuthoritative { aiCreditsAuthoritativeRows += 1 }
     }
 }

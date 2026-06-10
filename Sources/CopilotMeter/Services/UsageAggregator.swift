@@ -66,35 +66,87 @@ public struct UsageAggregator: Sendable {
             byWindowByRemoteSource[w] = [:]
         }
 
-        let authoritativeCreditKeys = Set(records.compactMap { record -> CreditKey? in
-            record.aiCreditsNano == nil ? nil : CreditKey(record)
-        })
+        // AIU is only written to disk at `session.shutdown` (authoritative
+        // `totalNanoAiu`). Per-message rows carry only output tokens. A session
+        // kept open (e.g. in tmux) accrues messages all day but writes no fresh
+        // shutdown, so today's usage has no authoritative AIU yet. To avoid
+        // showing ~0 for such sessions we estimate the credits of messages that
+        // occurred AFTER the key's last authoritative shutdown ("uncovered"),
+        // while messages on/before it stay covered by that shutdown's rollup.
+        //
+        // Per (session, source, model, remote) key we precompute:
+        //   lastAuthoritativeTs — newest authoritative-AIU timestamp
+        //   authoritativeAIU    — Σ authoritative AIU
+        //   coveredOutputTokens — Σ output tokens of messages on/before that ts
+        // and derive a calibrated AIU-per-output-token ratio from the key's own
+        // history (token-price estimates ignore input/cache and undercount ~6×).
+        var lastAuthoritativeTs: [CreditKey: Date] = [:]
+        var authoritativeAIU: [CreditKey: Double] = [:]
+        for r in records where r.aiCreditsNano != nil {
+            let key = CreditKey(r)
+            authoritativeAIU[key, default: 0] += Double(r.aiCreditsNano!) / 1_000_000_000.0
+            if let cur = lastAuthoritativeTs[key] {
+                if r.timestamp > cur { lastAuthoritativeTs[key] = r.timestamp }
+            } else {
+                lastAuthoritativeTs[key] = r.timestamp
+            }
+        }
+        var coveredOutputTokens: [CreditKey: Int] = [:]
+        for r in records where r.aiCreditsNano == nil && r.requestCount > 0 && r.outputTokens > 0 {
+            let key = CreditKey(r)
+            if let lastTs = lastAuthoritativeTs[key], r.timestamp <= lastTs {
+                coveredOutputTokens[key, default: 0] += r.outputTokens
+            }
+        }
+        // Calibrated, sanity-bounded ratio per key. Require enough covered
+        // output to be meaningful; clamp to [output-only rate, 50× output-only]
+        // so a tiny denominator can't explode the estimate.
+        let minCoveredOutputTokens = 1_000
+        var ratioPerKey: [CreditKey: Double] = [:]
+        for (key, aiu) in authoritativeAIU {
+            guard aiu > 0,
+                  let covered = coveredOutputTokens[key], covered >= minCoveredOutputTokens
+            else { continue }
+            var ratio = aiu / Double(covered)
+            if let floorRate = PricingCatalog.outputAiuPerToken(for: key.model) {
+                ratio = min(max(ratio, floorRate), floorRate * 50.0)
+            }
+            ratioPerKey[key] = ratio
+        }
+
+        func perRecordCredits(_ r: UsageRecord) -> (credits: Double, authoritative: Bool) {
+            if let nano = r.aiCreditsNano {
+                return (Double(nano) / 1_000_000_000.0, true)
+            }
+            // Non-AIU row: only output-bearing message rows can estimate credits.
+            guard r.requestCount > 0, r.outputTokens > 0 else { return (0, false) }
+            let key = CreditKey(r)
+            // Covered by an authoritative shutdown that already counts it.
+            if let lastTs = lastAuthoritativeTs[key], r.timestamp <= lastTs {
+                return (0, false)
+            }
+            // Uncovered (in-progress) → calibrated estimate, else token-price.
+            if let ratio = ratioPerKey[key] {
+                return (Double(r.outputTokens) * ratio, false)
+            }
+            return (PricingCatalog.estimatedCost(for: r) * 100.0, false)
+        }
 
         for r in records {
-            let includeEstimatedAiCredits = !(r.requestCount > 0 && authoritativeCreditKeys.contains(CreditKey(r)))
+            let (credits, authoritative) = perRecordCredits(r)
             let dayStart = calendar.startOfDay(for: r.timestamp)
-            // Per-record AI Credits: prefer the authoritative CLI value;
-            // fall back to PricingCatalog estimate (× 100, since 1 AIU = $0.01).
-            let perRecordCredits: Double
-            if let nano = r.aiCreditsNano {
-                perRecordCredits = Double(nano) / 1_000_000_000.0
-            } else if includeEstimatedAiCredits {
-                perRecordCredits = PricingCatalog.estimatedCost(for: r) * 100.0
-            } else {
-                perRecordCredits = 0
-            }
-            dailyCredits[dayStart, default: 0] += perRecordCredits
+            dailyCredits[dayStart, default: 0] += credits
 
             // For per-model breakdown, prefix remote-hosted records with @host
             // so users can see at a glance which usage came from where.
             let modelKey = r.remoteName.map { "\(r.model) @\($0)" } ?? r.model
 
             for w in TimeWindow.allCases where w.contains(r.timestamp, now: now) {
-                byWindow[w]!.add(r, includeEstimatedAiCredits: includeEstimatedAiCredits)
-                byWindowByModel[w]![modelKey, default: .zero].add(r, includeEstimatedAiCredits: includeEstimatedAiCredits)
-                byWindowBySource[w]![r.source, default: .zero].add(r, includeEstimatedAiCredits: includeEstimatedAiCredits)
-                byWindowByRemote[w]![r.remoteName, default: .zero].add(r, includeEstimatedAiCredits: includeEstimatedAiCredits)
-                byWindowByRemoteSource[w]![r.remoteName, default: [:]][r.source, default: .zero].add(r, includeEstimatedAiCredits: includeEstimatedAiCredits)
+                byWindow[w]!.add(r, credits: credits, isAuthoritative: authoritative)
+                byWindowByModel[w]![modelKey, default: .zero].add(r, credits: credits, isAuthoritative: authoritative)
+                byWindowBySource[w]![r.source, default: .zero].add(r, credits: credits, isAuthoritative: authoritative)
+                byWindowByRemote[w]![r.remoteName, default: .zero].add(r, credits: credits, isAuthoritative: authoritative)
+                byWindowByRemoteSource[w]![r.remoteName, default: [:]][r.source, default: .zero].add(r, credits: credits, isAuthoritative: authoritative)
             }
         }
 

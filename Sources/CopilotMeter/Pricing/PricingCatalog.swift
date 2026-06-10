@@ -142,6 +142,16 @@ public enum PricingCatalog {
         )
     }
 
+    /// AI Credits per output token at the model's output rate (1 AIU = $0.01,
+    /// so AIU = USD × 100; outputPerMillion USD/1e6 tokens × 100 = /10_000).
+    /// Used as a lower bound when calibrating an in-progress AIU estimate: the
+    /// true cost always includes input/cache on top of output, so a calibrated
+    /// per-output-token ratio should never fall below the output-only rate.
+    public static func outputAiuPerToken(for model: String) -> Double? {
+        guard let p = price(for: model) else { return nil }
+        return p.outputPerMillion / 10_000.0
+    }
+
     private static func canonical(_ model: String) -> String {
         model.lowercased()
             .replacingOccurrences(of: "-internal", with: "")

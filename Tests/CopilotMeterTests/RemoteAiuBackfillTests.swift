@@ -121,6 +121,65 @@ final class RemoteAiuBackfillTests: XCTestCase {
         XCTAssertGreaterThan(snapshot.byWindow[.today]?.estimatedRetailUsd ?? 0, 0)
     }
 
+    func testInProgressMessagesAfterLastShutdownAreEstimatedIntoToday() {
+        let now = Date()
+        let yesterdayShutdownTs = now.addingTimeInterval(-30 * 3600)
+        let coveredMsgTs = now.addingTimeInterval(-31 * 3600)   // before the shutdown
+        let todayMsgTs = now.addingTimeInterval(-3600)          // after, in-progress today
+
+        func msg(_ ts: Date, output: Int) -> UsageRecord {
+            UsageRecord(timestamp: ts, sessionId: "tmux", messageId: "m\(ts.timeIntervalSince1970)",
+                        source: .copilotCLI, model: "gpt-5.5", outputTokens: output,
+                        inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+                        requestCount: 1, premiumCost: nil, remoteName: "l40")
+        }
+        let shutdown = UsageRecord(
+            timestamp: yesterdayShutdownTs, sessionId: "tmux", messageId: "shutdown:1",
+            source: .copilotCLI, model: "gpt-5.5", outputTokens: 0,
+            inputTokens: 100_000, cacheReadTokens: 90_000, cacheWriteTokens: 0,
+            requestCount: 0, premiumCost: nil, aiCreditsNano: 10_000_000_000, remoteName: "l40")
+
+        let records = [shutdown, msg(coveredMsgTs, output: 2_000), msg(todayMsgTs, output: 500)]
+        let snap = UsageAggregator().snapshot(records: records, now: now)
+
+        // ratio = 10 AIU / 2000 covered output tokens = 0.005 AIU/token.
+        // Today only contains the uncovered message → 500 × 0.005 = 2.5 AIU.
+        XCTAssertEqual(snap.byWindow[.today]?.aiCredits ?? 0, 2.5, accuracy: 0.01)
+        // Month = authoritative 10 + covered 0 + today estimate 2.5 = 12.5.
+        XCTAssertEqual(snap.byWindow[.month]?.aiCredits ?? 0, 12.5, accuracy: 0.01)
+    }
+
+    func testMessagesCoveredByShutdownDoNotDoubleCount() {
+        let now = Date()
+        let shutdownTs = now.addingTimeInterval(-3600)
+        let coveredMsgTs = now.addingTimeInterval(-7200)   // before shutdown → covered
+        let shutdown = UsageRecord(
+            timestamp: shutdownTs, sessionId: "s", messageId: "shutdown:1",
+            source: .copilotCLI, model: "gpt-5.5", outputTokens: 0,
+            inputTokens: 10_000, cacheReadTokens: 9_000, cacheWriteTokens: 0,
+            requestCount: 0, premiumCost: nil, aiCreditsNano: 10_000_000_000, remoteName: "l40")
+        let coveredMsg = UsageRecord(
+            timestamp: coveredMsgTs, sessionId: "s", messageId: "m1",
+            source: .copilotCLI, model: "gpt-5.5", outputTokens: 1_000_000,
+            inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+            requestCount: 1, premiumCost: nil, remoteName: "l40")
+        let snap = UsageAggregator().snapshot(records: [shutdown, coveredMsg], now: now)
+        // Only the authoritative 10 AIU; the covered message adds nothing.
+        XCTAssertEqual(snap.byWindow[.today]?.aiCredits ?? 0, 10, accuracy: 0.0001)
+    }
+
+    func testSessionWithNoShutdownFallsBackToTokenEstimate() {
+        let now = Date()
+        let msg = UsageRecord(
+            timestamp: now.addingTimeInterval(-600), sessionId: "fresh", messageId: "m1",
+            source: .copilotCLI, model: "gpt-5.5", outputTokens: 1_000_000,
+            inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+            requestCount: 1, premiumCost: nil, remoteName: "l40")
+        let snap = UsageAggregator().snapshot(records: [msg], now: now)
+        // No authoritative history → PricingCatalog output estimate ($30/M ×100).
+        XCTAssertEqual(snap.byWindow[.today]?.aiCredits ?? 0, 3000, accuracy: 1.0)
+    }
+
     func testSessionStateGithubSessionClassifiesAsCLINotCloudAgent() {
         // hostType=github is no longer a Cloud Agent signal: a session in
         // session-state was run by copilot on the machine = terminal CLI.
